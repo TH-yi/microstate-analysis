@@ -59,9 +59,9 @@ Compute microstate results for each subject × task from raw per-subject JSON fi
 
 | Option | Type | Required | Description |
 |---|---|---:|---|
-| `--input-dir` | str | ✓ | Directory containing per-subject raw JSON (e.g., `P01.json`). |
+| `--input-dir` | str | ✓ | Directory containing per-subject raw JSON (e.g., `sub_01.json`). |
 | `--output-dir` | str | ✓ | Directory to save `{subject}_individual_maps.json`. |
-| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects P01 --subjects P02`). |
+| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects sub_01 --subjects sub_02`). |
 | `--task-name` | list[str] | ✓ | Repeat per task label (e.g., `--task-name "1_idea generation"`). |
 | `--peaks-only` | flag |  | Use peaks-only logic. |
 | `--min-maps` | int |  | Minimum K. |
@@ -78,7 +78,7 @@ Compute microstate results for each subject × task from raw per-subject JSON fi
 **Example (one-line):**
 
 ```bash
-microstate-analysis microstate-pipeline individual-run --input-dir storage/clean_data --output-dir storage/microstate_output/individual_run --subjects P01 --subjects P02 --subjects P03 --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --peaks-only --min-maps 2 --max-maps 10 --save-task-map-counts --task-map-counts-output-dir storage/microstate_output/individual_run --task-map-counts-output-filename individual_map_counts --max-processes 8 --log-dir storage/log/individual_run --log-prefix individual_run
+microstate-analysis microstate-pipeline individual-run --input-dir storage/clean_data --output-dir storage/microstate_output/individual_run --subjects sub_01 --subjects sub_02 --subjects sub_03 --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --peaks-only --min-maps 2 --max-maps 10 --save-task-map-counts --task-map-counts-output-dir storage/microstate_output/individual_run --task-map-counts-output-filename individual_map_counts --max-processes 8 --log-dir storage/log/individual_run --log-prefix individual_run
 ```
 
 ---
@@ -113,7 +113,7 @@ microstate-analysis microstate-pipeline across-runs --input-dir storage\microsta
 **POSIX example (one-line):**
 
 ```bash
-microstate-analysis microstate-pipeline across-runs --input-dir storage/microstate_output/individual_run --output-dir storage/microstate_output/across_runs --data-suffix _individual_maps.json --save-suffix _across_runs.json --subjects P01 --subjects P02 --subjects P03 --n-k 6 --n-k-index 4 --n-ch 63 --condition-dict-json '{"idea_generation":["1_idea generation","2_idea generation","3_idea generation"],"idea_evolution":["1_idea evolution","2_idea evolution","3_idea evolution"],"idea_rating":["1_idea rating","2_idea rating","3_idea rating"],"rest":["1_rest","3_rest"]}' --max-processes 3 --log-dir storage/log/across_runs --log-prefix across_runs
+microstate-analysis microstate-pipeline across-runs --input-dir storage/microstate_output/individual_run --output-dir storage/microstate_output/across_runs --data-suffix _individual_maps.json --save-suffix _across_runs.json --subjects sub_01 --subjects sub_02 --subjects sub_03 --n-k 6 --n-k-index 4 --n-ch 63 --condition-dict-json '{"idea_generation":["1_idea generation","2_idea generation","3_idea generation"],"idea_evolution":["1_idea evolution","2_idea evolution","3_idea evolution"],"idea_rating":["1_idea rating","2_idea rating","3_idea rating"],"rest":["1_rest","3_rest"]}' --max-processes 3 --log-dir storage/log/across_runs --log-prefix across_runs
 ```
 
 ---
@@ -140,7 +140,7 @@ Aggregate **per-subject** `_across_runs.json` files into a single `across_subjec
 **Example (one-line):**
 
 ```bash
-microstate-analysis microstate-pipeline across-subjects --input-dir storage/microstate_output/across_runs --output-dir storage/microstate_output/across_subjects --data-suffix _across_runs.json --save-name across_subjects.json --subjects P01 --subjects P02 --subjects P03 --condition-names idea_generation --condition-names idea_evolution --condition-names idea_rating --condition-names rest --n-k 6 --n-ch 63 --max-processes 3 --log-dir storage/log/across_subjects --log-prefix across_subjects
+microstate-analysis microstate-pipeline across-subjects --input-dir storage/microstate_output/across_runs --output-dir storage/microstate_output/across_subjects --data-suffix _across_runs.json --save-name across_subjects.json --subjects sub_01 --subjects sub_02 --subjects sub_03 --condition-names idea_generation --condition-names idea_evolution --condition-names idea_rating --condition-names rest --n-k 6 --n-ch 63 --max-processes 3 --log-dir storage/log/across_subjects --log-prefix across_subjects
 ```
 
 ---
@@ -240,7 +240,7 @@ cmd = ["microstate-analysis", "microstate-pipeline", "across-subjects",
        "--output-dir", "storage/microstate_output/across_subjects",
        "--data-suffix", "_across_runs.json",
        "--save-name", "across_subjects.json",
-       "--subjects", "P01", "--subjects", "P02", "--subjects", "P03",
+       "--subjects", "sub_01", "--subjects", "sub_02", "--subjects", "sub_03",
        "--condition-names", "idea_generation", "--condition-names", "idea_evolution",
        "--condition-names", "idea_rating", "--condition-names", "rest"]
 
