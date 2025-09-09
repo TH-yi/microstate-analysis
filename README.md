@@ -1,4 +1,4 @@
-# microstate analysis
+# Microstate Analysis
 
 A production-ready **EEG microstate analysis** toolkit packaged as a Python library with a **Typer-based CLI**. It is designed for both direct command-line use and **embedding in GUIs** via subprocess + stdout/stderr. The toolkit implements a modular pipeline:
 
