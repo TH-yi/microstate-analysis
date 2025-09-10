@@ -55,7 +55,7 @@ class PipelineIndividualRun(PipelineBase):
             method = self.cluster_method
             n_std = self.n_std
             n_runs = self.n_runs
-            batch_params = [task_data, peaks_only, min_maps, max_maps, method, n_std, n_runs]
+            batch_params = [task_data, peaks_only, min_maps, max_maps, None, method, n_std, n_runs]
             task_microstate = batch_microstate(batch_params)
 
             res[task] = {
