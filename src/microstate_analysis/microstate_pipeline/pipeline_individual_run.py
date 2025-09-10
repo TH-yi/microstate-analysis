@@ -19,7 +19,7 @@ from microstate_analysis.microstate_base.data_handler import list_to_matrix
 class PipelineIndividualRun(PipelineBase):
     def __init__(self, input_dir, output_dir, subjects, peaks_only, min_maps, max_maps, task_name,
                  log_dir=None, prefix=None, suffix=None, cluster_method='kmeans_modified',
-                 n_std=3, n_runs=100):
+                 n_std=3, n_runs=100, use_gpu=False):
         super().__init__()
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -32,6 +32,7 @@ class PipelineIndividualRun(PipelineBase):
         self.cluster_method = cluster_method
         self.n_std = n_std
         self.n_runs = n_runs
+        self.use_gpu = use_gpu
         # Save logger config so it can be rebuilt in child processes
         self._logger_cfg = dict(log_dir=log_dir, prefix=prefix or '', suffix=suffix or '')
         self.logger = DualHandler(**self._logger_cfg)
@@ -55,7 +56,8 @@ class PipelineIndividualRun(PipelineBase):
             method = self.cluster_method
             n_std = self.n_std
             n_runs = self.n_runs
-            batch_params = [task_data, peaks_only, min_maps, max_maps, None, method, n_std, n_runs]
+            use_gpu = self.use_gpu
+            batch_params = [task_data, peaks_only, min_maps, max_maps, None, method, n_std, n_runs, use_gpu]
             task_microstate = batch_microstate(batch_params)
 
             res[task] = {
@@ -128,8 +130,8 @@ if __name__ == '__main__':
     individual_input_dir = '../../../storage/clean_data'
     individual_output_dir = '../../../storage/microstate_output/individual_run'
     peaks_only = True
-    min_maps = 4
-    max_maps = 6
+    min_maps = 2
+    max_maps = 10
     save_task_map_counts = True
 
     # optional parameters
@@ -138,16 +140,17 @@ if __name__ == '__main__':
     individual_log_suffix = ''
     task_map_counts_output_dir = '../../../storage/microstate_output/individual_run'
     task_map_counts_output_filename = 'individual_map_counts'
-    max_processes = 10
+    max_processes = 9
     cluster_method = 'kmeans_modified'
     n_std = 3
-    n_runs = 10
+    n_runs = 100
+    use_gpu = True
 
     individual_job = PipelineIndividualRun(log_dir=individual_log_dir, prefix=individual_log_prefix,
                                    suffix=individual_log_suffix, input_dir=individual_input_dir,
                                    output_dir=individual_output_dir, subjects=subjects,
                                    peaks_only=peaks_only, min_maps=min_maps, max_maps=max_maps,
                                    task_name=task_name, cluster_method=cluster_method,
-                                   n_std=n_std, n_runs=n_runs)
+                                   n_std=n_std, n_runs=n_runs, use_gpu=use_gpu)
     individual_job.generate_individual_eeg_maps(save_task_map_counts=save_task_map_counts, task_map_counts_output_dir=task_map_counts_output_dir,
                                                 task_map_counts_output_filename=task_map_counts_output_filename, max_processes=max_processes)

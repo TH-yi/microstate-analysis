@@ -158,8 +158,9 @@ def plot_eegmaps(data, task_names, first_row_order=[], sign=None, savepath=None,
         for j in range(len(maps[0])):
             ax = plt.subplot(ax_all[j])
             map_to_plt = (maps[0].T[:, j] - maps[0].T[:, j].mean()) * sign[j]
-            mne.viz.plot_topomap(map_to_plt, info, show=False, axes=ax, image_interp='spline36', contours=6, vmax=max_value, vmin=min_value)
-            # Add labels A-F above the first row
+            mne.viz.plot_topomap(map_to_plt, info, show=False, axes=ax, image_interp='cubic',
+                                 extrapolate='head', outlines='head', contours=6, sphere=0.095,
+                                 vlim=(min_value, max_value))               # Add labels A-F above the first row
             ax.set_title(chr(65 + j), fontsize=16, weight='bold')  # chr(65) is 'A'
         reordered_data = first_row_order
     else:
@@ -198,7 +199,9 @@ def plot_eegmaps(data, task_names, first_row_order=[], sign=None, savepath=None,
                     reordered_data_task_indices[int(new_place)] = j
 
                 map_to_plt = (maps[i].T[:, j] - maps[i].T[:, j].mean()) * sign[i][j]
-                mne.viz.plot_topomap(map_to_plt, info, show=False, axes=ax, image_interp='spline36', contours=6, vmax=max_value, vmin=min_value)
+                mne.viz.plot_topomap(map_to_plt, info, show=False, axes=ax, image_interp='cubic',
+                                     extrapolate='head', outlines='head',  contours=6, sphere=0.095,
+                                     vlim=(min_value, max_value))
 
             reordered_data[reordered_data_task_key] = reordered_data_task_indices
 

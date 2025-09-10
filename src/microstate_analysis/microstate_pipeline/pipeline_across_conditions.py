@@ -46,6 +46,7 @@ class PipelineAcrossConditions(PipelineBase):
         log_dir=None,
         log_prefix: str = "across_conditions",
         log_suffix: str = "",
+        use_gpu: bool = False
     ):
         super().__init__()
         # Paths & params
@@ -56,6 +57,7 @@ class PipelineAcrossConditions(PipelineBase):
         self.condition_names = condition_names
         self.n_k = n_k
         self.n_ch = n_ch
+        self.use_gpu = use_gpu
 
         # Logger (reconstructable in child if ever refactored to MP)
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
@@ -102,7 +104,7 @@ class PipelineAcrossConditions(PipelineBase):
                 self.logger.log_error(f"Condition '{cond}' missing or malformed in input JSON: {e}")
                 raise
 
-        micro = MeanMicrostate(maps, self.n_k, self.n_ch, len(self.condition_names))
+        micro = MeanMicrostate(maps, self.n_k, self.n_ch, len(self.condition_names), use_gpu=self.use_gpu)
         m_maps, m_label, m_mean, m_std = micro.mean_microstates()
 
         result = {

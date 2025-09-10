@@ -17,7 +17,10 @@ A production-ready **EEG microstate analysis** toolkit packaged as a Python libr
 - Cross-platform **multiprocessing** with `spawn` and child-safe logger reconstruction.
 - All pipeline parameters are **explicit CLI options** (no mandatory config file).
 - Easy to extend: add new subpackages (e.g., `pca_microstate_pipeline`, `anova`) and register new subcommands.
-
+- **Optional GPU acceleration**: all core clustering (`Microstate`, `MeanMicrostate`) support
+  `--use-gpu` flag in CLI. When enabled (and CuPy is available), heavy linear algebra
+  (distance, correlation, eigen-decomposition) runs on GPU for significant speedups.
+  Falls back gracefully to CPU if unavailable.
 ---
 
 ## Installation
@@ -216,6 +219,41 @@ Plot a grid from `across_conditions.json`, compute an ordering, reorder maps, an
 microstate-analysis plot across-conditions --input-json-path storage/microstate_output/across_conditions/across_conditions.json --output-img-dir storage/microstate_output/across_conditions/plots --reordered-json-path storage/microstate_output/across_conditions/across_conditions_reordered.json --conditions idea_generation --conditions idea_evolution --conditions idea_rating --conditions rest --first-row-order 3 --first-row-order 5 --first-row-order 0 --first-row-order 4 --first-row-order 2 --first-row-order 1 --log-dir storage/log/plot_across_conditions --log-prefix plot_across_conditions
 ```
 
+---
+
+## Metrics Parameters Calculation
+Compute **microstate metrics** (coverage, duration, entropy rate, transition frequency, Hurst, etc.)  
+on each subject × task × epoch. You can choose which metrics to calculate.
+
+**Key options**
+
+| Option | Type | Required | Description |
+|---|---|---:|---|
+| `--input-dir` | str | ✓ | Directory containing per-subject raw JSON. |
+| `--output-dir` | str | ✓ | Directory to save `{subject}_parameters.json`. |
+| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects sub_01 --subjects sub_02`). |
+| `--task-name` | list[str] | ✓ | Repeat per task label. |
+| `--maps-file` | str | ✓ | Path to JSON file of maps. |
+| `--parameters` | list[str] |  | Metrics set. Supported: `coverage, duration, segments, duration_seconds, duration_seconds_std, duration_seconds_median, transition_frequency, entropy_rate, hurst_mean, hurst_states, transition_matrix`. |
+| `--include-duration-seconds` | flag |  | If `duration_seconds*` requested, report values in seconds. |
+| `--log-base` | float |  | Base for entropy rate (default e). |
+| `--states` | list[int] |  | Explicit state order. |
+| `--max-processes` | int |  | Cap worker processes. |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging config. |
+
+**Default metrics if omitted**:  
+`coverage, duration, transition_frequency, entropy_rate, hurst_mean`
+
+**Example:**
+```bash
+microstate-analysis metrics parameters-run \
+  --input-dir storage/clean_data \
+  --output-dir storage/microstate_output/metric_parameters \
+  --subjects sub_01 --subjects sub_02 \
+  --task-name "1_idea generation" --task-name "2_idea generation" \
+  --maps-file storage/microstate_output/across_conditions/across_conditions_reordered.json \
+  --parameters coverage --parameters transition_frequency --parameters entropy_rate
+```
 ---
 
 ## End-to-End Minimal Pipeline (one-liners)

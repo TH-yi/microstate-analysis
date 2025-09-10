@@ -1,17 +1,35 @@
-
 from scipy import signal
 import numpy as np
 
 from microstate_analysis.eeg_tool.math_utilis import zero_mean
+from microstate_analysis.microstate_base.microstate_label_squence_metrics import *
+from typing import Set
+
+# ---- GPU optional backend (CuPy) adapter ----
+_MS_GPU_AVAILABLE = False
+try:
+    from microstate_analysis.microstate_base.microstate_gpu import MicrostateGPU as _MicrostateGPU
+    import os, sys, glob
+    from pathlib import Path
+
+    _MS_GPU_AVAILABLE = True
+
+except Exception as e:
+    print(f"Error import microstate_gpu module: {e}")
+    _MS_GPU_AVAILABLE = False
 
 
 class Microstate:
-    def __init__(self, data):
+    def __init__(self, data, use_gpu: bool = False):
         self.data = data.T
         self.data = zero_mean(self.data, 1)
         self.n_t = self.data.shape[0]
         self.n_ch = self.data.shape[1]
         self.gfp = None
+
+        # GPU delegation setup
+        self._use_gpu = bool(use_gpu and _MS_GPU_AVAILABLE)
+        self._gpu = _MicrostateGPU(self.data.T, use_gpu=True) if self._use_gpu else None
         self.peaks = None
 
         self.cv = None
@@ -109,7 +127,7 @@ class Microstate:
                 next_middle = int((peaks[i] + peaks[i + 1]) / 2)
             elif i == len(peaks) - 1:
                 previous_middle = int((peaks[i] + peaks[i - 1]) / 2)
-                next_middle = len(peaks) - 1
+                next_middle = data.shape[0]
             else:
                 previous_middle = int((peaks[i] + peaks[i - 1]) / 2)
                 next_middle = int((peaks[i] + peaks[i + 1]) / 2)
@@ -158,6 +176,158 @@ class Microstate:
             res['coverage'].append(Microstate.microstates_coverage(label, n_maps))
         return res
 
+    @staticmethod
+    def microstates_parameters_selective(
+            data,
+            maps,
+            distance: int = 10,
+            n_std: int = 3,
+            polarity: bool = False,
+            sfreq: float = 500,
+            epoch: float = 2.0,
+            parameters: Optional[Set[str]] = None,
+            log_base: float = math.e,
+            states: Optional[List[Any]] = None,
+            include_duration_seconds: bool = False,
+    ) -> Dict[str, List[Any]]:
+        """
+        Compute selected microstate metrics per epoch from raw data and a fixed set of maps.
+
+        This function is a *new* API that does not change the legacy `microstates_parameters`.
+        It returns only the requested metrics as lists aligned by epoch.
+
+        Args:
+            data: EEG array (n_times, n_channels) or (n_channels, n_times) depending on your zero_mean usage.
+            maps: Fixed microstate maps used for backfitting (len = n_maps).
+            distance, n_std, polarity: Parameters passed to `fit_back`.
+            sfreq: Sampling frequency in Hz. If <= 0, duration_seconds/transition_frequency in seconds are disabled.
+            epoch: Window size in seconds (split the time-series into chunks of size `epoch`).
+            parameters: A set of metric keys to compute. If None, a sensible default set is used.
+                Supported keys:
+                  - 'coverage'                -> coverage per state (list[list[float]])
+                  - 'duration'                -> mean duration per state in *samples* (compat style) (list[list[float]])
+                  - 'segments'                -> number of segments per state (list[list[int]])
+                  - 'duration_seconds'        -> mean duration per state in *seconds* (list[dict or list])
+                  - 'transition_frequency'    -> switches/sec if sfreq>0 else fraction per sample (list[float])
+                  - 'entropy_rate'            -> (list[float])
+                  - 'hurst_mean'              -> mean H across states (list[float])
+                  - 'hurst_states'            -> per-state H (list[dict])
+                  - 'transition_matrix'       -> per-epoch row-stochastic matrix (list[np.ndarray])
+            log_base: Log base for entropy rate (default: e).
+            states: Optional explicit state order. If None, defaults to [0..n_maps-1] for stability.
+            include_duration_seconds: If True and 'duration_seconds' is requested, return second-based duration stats.
+
+        Returns:
+            Dict[str, list] where each value is a list with one entry per epoch. Keys match requested `parameters`.
+        """
+        # Default selection
+        default_params = {
+            'coverage',
+            'duration',
+            'transition_frequency',
+            'entropy_rate',
+            'hurst_mean',
+        }
+        params: Set[str] = set(default_params if parameters is None else parameters)
+
+        # Prepare outputs
+        out: Dict[str, List[Any]] = {k: [] for k in params}
+        n_maps = len(maps)
+        st = states if (states is not None and len(states) > 0) else list(range(n_maps))
+
+        # Zero-mean like your legacy function (keeps legacy orientation)
+        data = zero_mean(data.T, 1)  # shape -> (T, C)
+        hop = int(sfreq * epoch) if sfreq and sfreq > 0 else int(epoch)  # graceful fallback
+
+        # Iterate epochs
+        for i in range(0, data.shape[0], hop):
+            data_epoch = data[i: i + hop]
+            if data_epoch.shape[0] < 2:
+                # Not enough samples: push NaNs/empty per requested metric
+                for k in params:
+                    if k in ('coverage', 'duration', 'segments', 'duration_seconds'):
+                        # per-state lists
+                        if k == 'coverage':
+                            out[k].append([np.nan] * n_maps)
+                        elif k == 'duration':
+                            out[k].append([np.nan] * n_maps)
+                        elif k == 'segments':
+                            out[k].append([0] * n_maps)
+                        elif k == 'duration_seconds':
+                            out[k].append([np.nan] * n_maps)
+                    elif k in ('hurst_states', 'transition_matrix'):
+                        out[k].append({} if k == 'hurst_states' else np.full((n_maps, n_maps), np.nan))
+                    else:
+                        out[k].append(np.nan)
+                continue
+
+            # 1) Back-fit labels for this epoch
+            label = Microstate.fit_back(data_epoch, maps, distance, n_std, polarity)
+
+            # 2) Legacy-style, per-state duration/coverage (in *samples*)
+            if 'duration' in params or 'segments' in params or 'coverage' in params:
+                # Duration (mean per state) in samples - preserves old semantics
+                if 'duration' in params:
+                    out['duration'].append(Microstate.microstates_duration(label, n_maps))
+
+                # Coverage (fraction per state) in order 0..n_maps-1
+                if 'coverage' in params:
+                    out['coverage'].append(Microstate.microstates_coverage(label, n_maps))
+
+                # Segments (run counts per state)
+                if 'segments' in params:
+                    # derive segments from run-length encoding
+                    # faster path: reuse per-state durations length
+                    durs = Microstate.microstates_duration(label, n_maps)  # uses contiguous runs internally
+                    # microstates_duration returns means; we still need counts -> recompute RLE quickly:
+                    # (moderately cheap, keeps clarity)
+                    lab = np.asarray(label)
+                    boundaries = np.flatnonzero(np.r_[True, lab[1:] != lab[:-1]])
+                    run_labels = lab[boundaries]
+                    seg_counts = [int(np.sum(run_labels == s)) for s in st]
+                    out['segments'].append(seg_counts)
+
+            # 3) Transition-based & information metrics (and Hurst)
+            if any(p in params for p in
+                   ('transition_frequency', 'entropy_rate', 'hurst_mean', 'hurst_states', 'duration_seconds',
+                    'transition_matrix')):
+                # Use helper that already aligns with explicit `states=st`
+                met = metrics_for_labels(
+                    label,
+                    sfreq=sfreq,
+                    states=st,
+                    log_base=log_base,
+                    include_duration=bool('duration_seconds' in params),  # compute second-based stats only if requested
+                    include_state_hurst=bool('hurst_states' in params)
+                )
+
+                if 'transition_frequency' in params:
+                    out['transition_frequency'].append(met['transition_frequency'])
+
+                if 'entropy_rate' in params:
+                    out['entropy_rate'].append(met['entropy_rate'])
+
+                if 'hurst_mean' in params:
+                    out['hurst_mean'].append(met.get('hurst_mean', np.nan))
+
+                if 'hurst_states' in params:
+                    out['hurst_states'].append({k: v for k, v in met.items() if k.startswith('hurst_')})
+
+                if 'duration_seconds' in params and include_duration_seconds:
+                    # Pull per-state second-based means; keys are duration_mean_<s>
+                    dur_keys = [f"duration_mean_{s}" for s in st]
+                    # If not available (e.g., sfreq<=0), store NaNs
+                    if all(k in met for k in dur_keys):
+                        out['duration_seconds'].append([float(met[k]) for k in dur_keys])
+                    else:
+                        out['duration_seconds'].append([np.nan] * n_maps)
+
+                if 'transition_matrix' in params:
+                    P, _ = transition_matrix(label, states=st)
+                    out['transition_matrix'].append(P)
+
+        return out
+
     def cross_validation(self, var, n_maps):
         return var * (self.n_ch - 1) ** 2 / (self.n_ch - n_maps - 1.) ** 2
 
@@ -174,6 +344,14 @@ class Microstate:
         self.gfp = gfp
 
     def kmeans_modified(self, data, data_std, n_runs=10, n_maps=4, maxerr=1e-6, maxiter=1000, polarity=False):
+
+        # GPU delegation when available
+        if getattr(self, "_gpu", None) is not None:
+            cv, gev, maps, label = self._gpu.kmeans_modified(
+                data=self._gpu.xp.asarray(data) if hasattr(self._gpu, "xp") else data,
+                data_std=self._gpu.xp.asarray(data_std) if hasattr(self._gpu, "xp") else data_std,
+                n_runs=n_runs, n_maps=n_maps, maxerr=maxerr, maxiter=maxiter, polarity=polarity)
+            return cv, gev, maps, label
         n_gfp = data_std.shape[0]
         cv_list = []
         gev_list = []
@@ -206,6 +384,23 @@ class Microstate:
 
     def opt_microstate(self, min_maps=2, max_maps=10, distance=10, n_std=3, n_runs=10, maxerr=1e-6, maxiter=1000,
                        polarity=False, peaks_only=True, method='kmeans_modified', opt_k=None):
+
+        # GPU delegation: if requested and method is kmeans_modified, run on GPU then mirror results.
+        if getattr(self, "_gpu", None) is not None and method == 'kmeans_modified':
+            self._gpu.opt_microstate(min_maps=min_maps, max_maps=max_maps, distance=distance, n_std=n_std,
+                                     n_runs=n_runs, maxerr=maxerr, maxiter=maxiter, polarity=polarity,
+                                     peaks_only=peaks_only, method=method, opt_k=opt_k)
+            self.cv = self._gpu.cv
+            self.gev = self._gpu.gev
+            self.maps = self._gpu.maps
+            self.label = self._gpu.label
+            self.opt_k = self._gpu.opt_k
+            self.opt_k_index = self._gpu.opt_k_index
+            self.cv_list = self._gpu.cv_list
+            self.gev_list = self._gpu.gev_list
+            self.maps_list = self._gpu.maps_list
+            self.label_list = self._gpu.label_list
+            return
         self.gfp_peaks(distance=distance, n_std=n_std)
         if peaks_only:
             temp_data = self.data[self.peaks]
@@ -254,6 +449,12 @@ class Microstate:
         self.label_list = [temp.tolist() for temp in self.label_list]
 
     def optimize_k(self, maps, data=None, data_std=None, polarity=False):
+
+        # GPU delegation when available
+        if getattr(self, "_gpu", None) is not None:
+            label, correlation, cv, gev = self._gpu.optimize_k(maps=maps, data=data, data_std=data_std,
+                                                               polarity=polarity)
+            return label, correlation, cv, gev
         if data is None and data_std is None:
             data = self.data
             data_std = self.gfp
@@ -276,7 +477,7 @@ class Microstate:
         maps_list = []
         res_label_list = []
         while n_maps > (min_maps - 1):
-            #print("n_maps:%d" % n_maps)
+            # print("n_maps:%d" % n_maps)
             correlation = Microstate.spatial_correlation(data, zero_mean(maps, 1).T, data_std, maps.std(axis=1),
                                                          self.n_ch)
             correlation = correlation if polarity else abs(correlation)

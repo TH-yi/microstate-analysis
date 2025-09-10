@@ -27,7 +27,8 @@ def batch_mean_microstate(para):
     n_k = para[1]
     n_ch = para[2]
     n_condition = para[3]
-    microstates = MeanMicrostate(data, n_k, n_ch, n_condition)
+    use_gpu = para[4] if len(para) > 4 else False
+    microstates = MeanMicrostate(data, n_k, n_ch, n_condition, use_gpu=use_gpu)
     eegmaps, label, mean_similarity, std_similarity = microstates.mean_microstates()
     return {"maps": eegmaps, "label": label, "mean_similarity": mean_similarity, "std_similarity": std_similarity}
 
@@ -41,7 +42,8 @@ def batch_microstate(para):
     method = para[5] if len(para) > 5 else 'kmeans_modified'
     n_std = para[6] if len(para) > 6 else 3
     n_runs = para[7] if len(para) > 7 else 100
-    microstate = Microstate(data)
+    use_gpu = para[8] if len(para) > 8 else False
+    microstate = Microstate(data, use_gpu=use_gpu)
     microstate.opt_microstate(min_maps, max_maps, n_std=n_std, n_runs=n_runs, peaks_only=peaks_only, method=method,
                               opt_k=opt_k)
     return microstate

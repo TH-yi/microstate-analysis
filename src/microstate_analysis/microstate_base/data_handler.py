@@ -13,10 +13,11 @@ def create_info():
           'PO8', 'P6', 'P2', 'CPz', 'CP4', 'TP8', 'C6', 'C2', 'FC4', 'FT8', 'F6', 'F2', 'AF4', 'AF8']
 
 
-    locs_path = os.path.abspath(os.path.join('..', '..', 'eeg_code', 'eeg_tool', 'cap63.locs'))
+    locs_path = os.path.abspath(os.path.join('..', '..', 'microstate_analysis', 'eeg_tool', 'cap63.locs'))
     #montage = mne.channels.read_custom_montage(locs_path)
-    info = mne.create_info(ch_names=ch, sfreq=500, ch_types='eeg', montage=locs_path)
-
+    info = mne.create_info(ch_names=ch, sfreq=500, ch_types='eeg')
+    montage = mne.channels.read_custom_montage(locs_path)
+    info.set_montage(montage, on_missing='raise')
     return info
 
 

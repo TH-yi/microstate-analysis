@@ -1,7 +1,7 @@
 # src/microstate_analysis/cli.py
 from __future__ import annotations
 import json
-import sys
+import math
 import typer
 from typing import List, Optional
 from microstate_analysis.microstate_pipeline.pipeline_individual_run import PipelineIndividualRun
@@ -10,6 +10,7 @@ from microstate_analysis.microstate_pipeline.pipeline_across_subjects import Pip
 from microstate_analysis.microstate_pipeline.pipeline_across_conditions import PipelineAcrossConditions
 from microstate_analysis.microstate_pipeline.plot_across_subjects_output_reorder import PlotAcrossSubjectsOutput
 from microstate_analysis.microstate_pipeline.plot_across_conditions_output_reorder import PlotAcrossConditionsOutput
+from microstate_analysis.microstate_metrics.metrics_parameters import MetricsParameters
 
 app = typer.Typer(help="Microstate Analysis CLI")
 
@@ -54,6 +55,7 @@ def cli_individual_run(
         log_dir: Optional[str] = typer.Option(None),
         log_prefix: str = typer.Option("individual_run"),
         log_suffix: str = typer.Option(""),
+        use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     try:
         job = PipelineIndividualRun(
@@ -70,6 +72,7 @@ def cli_individual_run(
             cluster_method=cluster_method,
             n_std=n_std,
             n_runs=n_runs,
+            use_gpu=use_gpu
         )
         job.logger.log_info("[CLI] individual-run started")
         job.generate_individual_eeg_maps(
@@ -100,6 +103,7 @@ def cli_across_runs(
         # condition dict as JSON string for CLI
         condition_dict_json: str = typer.Option(..., help='JSON string mapping condition -> list of tasks.'),
         max_processes: Optional[int] = typer.Option(None, help="Max worker processes (default=min(CPU, #subjects))."),
+        use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     try:
         condition_dict = json.loads(condition_dict_json)
@@ -117,6 +121,7 @@ def cli_across_runs(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            use_gpu=use_gpu
         )
         job.logger.log_info("[CLI] across-runs started")
         job.run(max_processes=max_processes)
@@ -140,6 +145,7 @@ def cli_across_subjects(
         log_prefix: str = typer.Option("across_subjects"),
         log_suffix: str = typer.Option(""),
         max_processes: Optional[int] = typer.Option(None),
+        use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     try:
         job = PipelineAcrossSubjects(
@@ -154,6 +160,7 @@ def cli_across_subjects(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            use_gpu=use_gpu
         )
         job.logger.log_info("[CLI] across-subjects started")
         job.run(max_processes=max_processes)
@@ -174,6 +181,7 @@ def cli_across_conditions(
         log_dir: Optional[str] = typer.Option(None),
         log_prefix: str = typer.Option("across_conditions"),
         log_suffix: str = typer.Option(""),
+        use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     try:
         job = PipelineAcrossConditions(
@@ -187,6 +195,7 @@ def cli_across_conditions(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            use_gpu=use_gpu
         )
         job.logger.log_info("[CLI] across-conditions started")
         job.run()
@@ -255,5 +264,64 @@ def cli_plot_across_conditions(
         job.plot_and_reorder()
         job.logger.log_info("[CLI] plot across-conditions finished")
 
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+# ===== Metrics =====
+metrics_app = typer.Typer(help="Run microstate metrics pipelines.")
+app.add_typer(metrics_app, name="metrics")
+
+
+@metrics_app.command("parameters-run")
+def cli_parameters_run(
+        input_dir: str = typer.Option(..., help="Directory containing raw per-subject JSON files."),
+        output_dir: str = typer.Option(..., help="Directory to save {subject}_parameters.json"),
+        subjects: List[str] = typer.Option(..., help="E.g., sub_01 sub_02 ..."),
+        task_name: List[str] = typer.Option(..., help="Task names, e.g. '1_idea generation' '2_idea generation' ..."),
+        maps_file: str = typer.Option(..., help="Path to JSON of across-condition maps."),
+        distance: int = typer.Option(10),
+        n_std: int = typer.Option(3),
+        polarity: bool = typer.Option(False),
+        sfreq: int = typer.Option(500),
+        epoch: float = typer.Option(2.0, help="Epoch window in seconds."),
+        parameters: List[str] = typer.Option(
+            [],
+            help="Metrics to compute. If empty, defaults to coverage,duration,transition_frequency,entropy_rate,"
+                 "hurst_mean."),
+        include_duration_seconds: bool = typer.Option(False,
+                                                      help="If True and duration_seconds* requested, use seconds."),
+        log_base: float = typer.Option(math.e, help="Log base for entropy rate."),
+        states: Optional[List[int]] = typer.Option(None, help="Explicit state order."),
+        max_processes: Optional[int] = typer.Option(None, help="Cap worker processes."),
+        log_dir: Optional[str] = typer.Option(None),
+        log_prefix: str = typer.Option("parameters_run"),
+        log_suffix: str = typer.Option("")
+):
+    """Compute selected microstate metrics per subject × task."""
+    try:
+        selected_params = set(parameters) if parameters else None
+        job = MetricsParameters(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            subjects=subjects,
+            maps_file=maps_file,
+            distance=distance,
+            n_std=n_std,
+            polarity=polarity,
+            sfreq=sfreq,
+            epoch=epoch,
+            task_name=task_name,
+            parameters=selected_params,
+            include_duration_seconds=include_duration_seconds,
+            log_base=log_base,
+            states=states,
+            log_dir=log_dir,
+            prefix=log_prefix,
+            suffix=log_suffix,
+        )
+        job.logger.log_info("[CLI] metrics parameters-run started")
+        job.generate_microstate_parameters(max_processes=max_processes)
+        job.logger.log_info("[CLI] metrics parameters-run finished")
     except Exception as e:
         typer.echo(f"[ERROR] {e}", err=True)

@@ -114,7 +114,7 @@ class PlotAcrossSubjectsOutput(PipelineBase):
         self.logger.log_info("Plotting EEG maps across subjects...")
         order = plot_eegmaps(
             data,
-            self.map_condition_name,                   # usually ["maps"]
+            self.map_condition_name,
             first_row_order=self.first_row_order,      # default [3,5,4,1,0,2]
             savepath=self.output_img_dir,
         )
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     conditions = ["idea_generation", "idea_evolution", "idea_rating", "rest"]
 
     # Plotting options
-    map_condition_name = ["maps"]            # key(s) used by plot_eegmaps
+    map_condition_name = ["idea_generation", "idea_evolution", "idea_rating", "rest"]  # key(s) used by plot_eegmaps
     first_row_order = [3, 5, 4, 1, 0, 2]     # preserve your original choice
 
     # Logging

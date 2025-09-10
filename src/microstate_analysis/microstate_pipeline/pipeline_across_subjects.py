@@ -43,6 +43,7 @@ class PipelineAcrossSubjects(PipelineBase):
         log_dir=None,
         log_prefix: str = "across_subjects",
         log_suffix: str = "",
+        use_gpu: bool = False
     ):
         super().__init__()
         # Core params
@@ -54,6 +55,7 @@ class PipelineAcrossSubjects(PipelineBase):
         self.condition_names = condition_names
         self.n_k = n_k
         self.n_ch = n_ch
+        self.use_gpu = use_gpu
 
         # Logger config for safe reconstruction in child processes
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
@@ -97,7 +99,7 @@ class PipelineAcrossSubjects(PipelineBase):
             maps.append(data[cond]["maps"])
 
         # Aggregate across subjects
-        agg = batch_mean_microstate([maps, self.n_k, self.n_ch, len(self.subjects)])
+        agg = batch_mean_microstate([maps, self.n_k, self.n_ch, len(self.subjects), self.use_gpu])
         result = {
             "maps": agg["maps"].tolist(),
             "label": agg["label"],
@@ -136,7 +138,7 @@ if __name__ == "__main__":
     # ----------------- EDIT YOUR PARAMETERS HERE (no config file) -----------------
 
     # Subjects & I/O
-    subjects = [f"P{i:02d}" for i in range(1, 29)]
+    subjects = [f"sub_{i:02d}" for i in range(1, 29)]
     input_dir = "../../../storage/microstate_output/across_runs"         # where each subject's per-condition JSON is
     output_dir = "../../../storage/microstate_output/across_subjects"    # where to save the final JSON
     data_suffix = "_across_runs.json"                       # input filename suffix per subject
@@ -157,6 +159,9 @@ if __name__ == "__main__":
     # Multiprocessing cap (None = up to CPU count)
     max_processes = None
 
+    # Use gpu (cupy)
+    use_gpu = True
+
     # ----------------- RUN -----------------
     job = PipelineAcrossSubjects(
         input_dir=input_dir,
@@ -170,6 +175,7 @@ if __name__ == "__main__":
         log_dir=log_dir,
         log_prefix=log_prefix,
         log_suffix=log_suffix,
+        use_gpu=use_gpu
     )
     job.logger.log_info("Start across_subjects pipeline")
     job.run(max_processes=max_processes)

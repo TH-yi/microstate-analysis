@@ -2,7 +2,7 @@ import os
 import json
 
 
-class PipelineBase():
+class MetricsBase():
     def ensure_dir(self, dir):
         directory = os.path.dirname(dir)
         if not os.path.exists(directory):

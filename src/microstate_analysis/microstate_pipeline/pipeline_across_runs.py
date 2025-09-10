@@ -47,6 +47,7 @@ class PipelineAcrossRuns(PipelineBase):
             log_dir=None,
             log_prefix: str = "across_runs",
             log_suffix: str = "",
+            use_gpu: bool = False
     ):
         super().__init__()
         # Core paths/params
@@ -60,6 +61,7 @@ class PipelineAcrossRuns(PipelineBase):
         self.n_k = n_k
         self.n_k_index = n_k_index
         self.n_ch = n_ch
+        self.use_gpu = use_gpu
 
         # Logger (store args for child-process reconstruction)
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
@@ -109,7 +111,7 @@ class PipelineAcrossRuns(PipelineBase):
             maps = [data[task]["maps_list"][self.n_k_index] for task in task_list]
 
             # batch_mean_microstate expects: [maps, n_k, n_ch, n_runs]
-            agg = batch_mean_microstate([maps, self.n_k, self.n_ch, len(task_list)])
+            agg = batch_mean_microstate([maps, self.n_k, self.n_ch, len(task_list), self.use_gpu])
             res[cond] = {
                 "maps": agg["maps"].tolist(),
                 "label": agg["label"],
@@ -179,6 +181,9 @@ if __name__ == "__main__":
     # Multiprocessing cap (None = up to CPU count)
     max_processes = None
 
+    # Use gpu (cupy)
+    use_gpu = True
+
     # ----------------- RUN -----------------
     job = PipelineAcrossRuns(
         input_dir=input_dir,
@@ -194,6 +199,7 @@ if __name__ == "__main__":
         log_dir=log_dir,
         log_prefix=log_prefix,
         log_suffix=log_suffix,
+        use_gpu=use_gpu
     )
     job.logger.log_info("Start processing across_runs pipeline")
     job.run(max_processes=max_processes)

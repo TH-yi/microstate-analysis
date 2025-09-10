@@ -93,10 +93,9 @@ class PlotAcrossConditionsOutput(PipelineBase):
         """
         data = self._load_data()
         # Basic validation (ensure expected keys exist)
-        for cond in self.conditions:
-            if cond not in data or "maps" not in data[cond]:
-                self.logger.log_error(f"Missing maps for condition: {cond}")
-                raise KeyError(f"Missing maps for condition: {cond}")
+        if "maps" not in data:
+            self.logger.log_error(f"Missing maps in data")
+            raise KeyError(f"Missing maps in data")
 
         # Ensure output image directory exists
         self._ensure_dir(self.output_img_dir)
