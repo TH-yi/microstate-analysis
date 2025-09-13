@@ -9,7 +9,7 @@ except Exception as e:  # pragma: no cover
     _cp = None
     _HAS_CUPY = False
 
-from cupyx.scipy import signal as _signal
+from scipy.signal import find_peaks as _np_find_peaks
 import os, sys, glob
 import ctypes
 from pathlib import Path
@@ -220,8 +220,8 @@ class MicrostateGPU:
         self.xp = _xp(self.use_gpu)
 
         # keep a NumPy copy for CPU-only operations like find_peaks
-        self.data_np = _np.asarray(data)  # shape (n_t, n_ch) after transpose to match original
-        self.data_np = zero_mean(self.data_np, 1, _np)
+        self.data_np = _np.asarray(data, dtype=_np.float3)  # shape (n_t, n_ch) after transpose to match original
+        self.data_np = zero_mean(self.data_np, 1, _np).astype(_cp.float32 if self.use_gpu else _np.float32, copy=False)
 
         # GPU (or CPU) working copy
         self.data = _to_xp(self.data_np, self.xp)
@@ -298,15 +298,12 @@ class MicrostateGPU:
         return var
 
     def gfp_peaks(self, distance=10, n_std=3):
-        gfp = self.data.std(axis=1)
-        # threshold window around mean ± n_std * std (same as original logic)
-        peaks, _ = _signal.find_peaks(
-            gfp,
-            distance=distance,
-            height=(float(gfp.mean() - n_std * gfp.std()), float(gfp.mean() + n_std * gfp.std()))
-        )
+        gfp_np = self.data_np.std(axis=1)  # CPU NumPy
+        lo = float(gfp_np.mean() - n_std * gfp_np.std())
+        hi = float(gfp_np.mean() + n_std * gfp_np.std())
+        peaks_np, _ = _np_find_peaks(gfp_np, distance=distance, height=(lo, hi))
         self.gfp = gfp
-        self.peaks = peaks
+        self.peaks = peaks_np
 
     # ---- core KMeans-like loop on GPU/CPU backend ----
     def kmeans_modified(self, data, data_std, n_runs=100, n_maps=4,
@@ -342,7 +339,7 @@ class MicrostateGPU:
                     Xk = data[mask, :]
                     cov = Xk.T @ Xk
                     # use power iteration instead of eigh
-                    v = xp.random.randn(self.n_ch, 1).astype(data.dtype)
+                    v = xp.random.randn(self.n_ch, 1).astype(self.data.dtype)
                     for _ in range(10):  # 10 iters usually enough
                         v = cov @ v
                         v /= xp.linalg.norm(v)
@@ -414,9 +411,11 @@ class MicrostateGPU:
             temp_data_std = self.gfp  # xp array
             temp_max_maps = int(min(int(temp_data.shape[0]), max_maps))
 
-        cv_list, gev_list, maps_list, label_list = [], [], [], []
+        cv_list, gev_list, maps_list = [], [], []
 
         if method == 'kmeans_modified':
+            best_cv = _np.inf
+            best = None
             for n_maps in range(min_maps, int(temp_max_maps) + 1):
                 cv, gev, maps, label = self.kmeans_modified(
                     data=temp_data, data_std=temp_data_std, n_runs=n_runs,
@@ -425,24 +424,21 @@ class MicrostateGPU:
                 cv_list.append(cv)
                 gev_list.append(gev)
                 maps_list.append(maps)
-                label_list.append(label)
+                if cv < best_cv:
+                    best_cv = cv
+                    best = (cv, gev, maps, label, n_maps)
+                del maps, label, gev, cv
+                if self.use_gpu:
+                    _cp.get_default_memory_pool().free_all_blocks()
+                    _cp.get_default_pinned_memory_pool().free_all_blocks()
         else:
             raise NotImplementedError("GPU AAHC is not implemented in this module.")
 
-        # choose k
-        if opt_k is not None:
-            self.opt_k_index = int(opt_k - min_maps)
-        else:
-            self.opt_k_index = int(_np.argmin(_np.asarray(cv_list, dtype=_np.float64)))
-
-        self.cv = cv_list[self.opt_k_index]
-        self.gev = gev_list[self.opt_k_index]
-        self.maps = maps_list[self.opt_k_index]
-        self.label = label_list[self.opt_k_index]
-        self.opt_k = len(self.gev)
-
+        self.cv, self.gev, self.maps, self.label, k_star = best
+        self.opt_k = int(k_star)
+        self.opt_k_index = int(opt_k - min_maps)
         # keep full lists JSON-serializable
         self.cv_list = [float(c) for c in cv_list]
         self.gev_list = [g.tolist() for g in gev_list]
         self.maps_list = [m.tolist() for m in maps_list]
-        self.label_list = [l.tolist() for l in label_list]
+        # self.label_list = [l.tolist() for l in label_list]
