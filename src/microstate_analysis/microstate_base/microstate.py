@@ -21,15 +21,14 @@ except Exception as e:
 
 class Microstate:
     def __init__(self, data, use_gpu: bool = False):
-        self.data = data.T
-        self.data = zero_mean(self.data, 1)
-        self.n_t = self.data.shape[0]
-        self.n_ch = self.data.shape[1]
-        self.gfp = None
-
         # GPU delegation setup
         self._use_gpu = bool(use_gpu and _MS_GPU_AVAILABLE)
-        self._gpu = _MicrostateGPU(self.data.T, use_gpu=True) if self._use_gpu else None
+        if self._use_gpu:
+            self._gpu = _MicrostateGPU(data, use_gpu=True)
+        else:
+            self.normalize_data(data)
+            self._gpu = None
+        self.gfp = None
         self.peaks = None
 
         self.cv = None
@@ -50,6 +49,12 @@ class Microstate:
         self.gev_list = []
         self.maps_list = []
         self.label_list = []
+
+    def normalize_data(self, data):
+        self.data = data.T
+        self.data = zero_mean(self.data, 1)
+        self.n_t = self.data.shape[0]
+        self.n_ch = self.data.shape[1]
 
     @staticmethod
     def orthogonal_dist(v, eeg_map):

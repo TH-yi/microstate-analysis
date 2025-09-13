@@ -175,9 +175,9 @@ if __name__ == '__main__':
     ]
 
     eegdata_input_dir = '../../../storage/clean_data'
-    eegmaps_input_path = '../../../storage/microstate_output_old/across_conditions/across_conditions_reordered.json'
+    eegmaps_input_path = '../../../storage/microstate_output/across_conditions/across_conditions_reordered.json'
 
-    metric_parameters_output_dir = '../../../storage/microstate_output_old/metric_parameters'
+    metric_parameters_output_dir = '../../../storage/microstate_output/metric_parameters'
 
     # optional parameters
     parameters_log_dir = '../../../storage/log/parameters_run'
@@ -192,11 +192,10 @@ if __name__ == '__main__':
         'transition_frequency',
         'entropy_rate',
         'hurst_mean',
-        # Uncomment if you also want second-based stats:
-        # 'duration_seconds', 'duration_seconds_std', 'duration_seconds_median',
-        # 'hurst_states',
-        # 'transition_matrix',
-        # 'segments',
+        'duration_seconds', 'duration_seconds_std', 'duration_seconds_median',
+        'hurst_states',
+        'transition_matrix',
+        'segments',
     }
 
     job = MetricsParameters(

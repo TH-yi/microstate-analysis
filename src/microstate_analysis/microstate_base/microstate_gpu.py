@@ -1,15 +1,15 @@
-
 import numpy as _np
 
 try:
     import cupy as _cp
+
     _HAS_CUPY = True
 except Exception as e:  # pragma: no cover
     print(f"Failed import cupy: {e}")
     _cp = None
     _HAS_CUPY = False
 
-from scipy import signal as _signal
+from cupyx.scipy import signal as _signal
 import os, sys, glob
 import ctypes
 from pathlib import Path
@@ -46,6 +46,7 @@ def zero_mean(x, axis=1, xp=_np):
     """Zero-mean along given axis. Compatible with NumPy/CuPy backends."""
     mean = xp.mean(x, axis=axis, keepdims=True)
     return x - mean
+
 
 def _ensure_cuda_dlls(preload: bool = True) -> None:
     """
@@ -159,6 +160,53 @@ def _pick_first_nvrtc_name(bin_dirs: Iterable[str]) -> str | None:
     return None
 
 
+#_ensure_cuda_dlls()
+
+
+def _as_xp_index(idx, xp):
+    """
+    Convert `idx` into a 1-D integer array that lives on `xp` (numpy or cupy).
+    - If xp is cupy and idx is numpy/list: move to device.
+    - If xp is numpy and idx is cupy: bring to host.
+    Ensures dtype is integer and shape is (N,).
+    """
+    # Move to the right backend
+    if xp is _np:
+        # Bring from CuPy to NumPy if needed
+        if _cp is not None and isinstance(idx, _cp.ndarray):
+            idx = _cp.asnumpy(idx)
+        idx = _np.asarray(idx)
+    else:
+        # xp is CuPy: push to device if needed
+        if not (hasattr(idx, "ndim") and getattr(idx, "__array_priority__", None) == 1000):
+            # Heuristic: non-cupy → to device
+            idx = xp.asarray(idx)
+
+    # Make it 1-D integer
+    if idx.ndim != 1:
+        idx = idx.ravel()
+    if idx.dtype.kind not in "iu":
+        idx = idx.astype(xp.int64, copy=False)
+    return idx
+
+
+def _ensure_xp_array(a, xp, dtype=None, copy=False):
+    """
+    Ensure `a` is an array on backend `xp` with optional dtype.
+    - If xp is cupy and `a` is numpy: moves to device.
+    - If xp is numpy and `a` is cupy: brings to host.
+    """
+    if xp is _np:
+        if _cp is not None and isinstance(a, _cp.ndarray):
+            a = _cp.asnumpy(a)
+        a = _np.asarray(a)
+    else:
+        a = xp.asarray(a)  # cupy: host→device if needed
+    if dtype is not None and a.dtype != dtype:
+        a = a.astype(dtype, copy=copy)
+    return a
+
+
 class MicrostateGPU:
     """
     GPU-accelerated variant of Microstate clustering (K-means-like) using CuPy.
@@ -167,13 +215,12 @@ class MicrostateGPU:
     """
 
     def __init__(self, data, use_gpu: bool = True):
-        _ensure_cuda_dlls()
         # choose backend
         self.use_gpu = bool(use_gpu and _HAS_CUPY)
         self.xp = _xp(self.use_gpu)
 
         # keep a NumPy copy for CPU-only operations like find_peaks
-        self.data_np = _np.asarray(data).T  # shape (n_t, n_ch) after transpose to match original
+        self.data_np = _np.asarray(data)  # shape (n_t, n_ch) after transpose to match original
         self.data_np = zero_mean(self.data_np, 1, _np)
 
         # GPU (or CPU) working copy
@@ -182,8 +229,8 @@ class MicrostateGPU:
         self.n_t = int(self.data.shape[0])
         self.n_ch = int(self.data.shape[1])
 
-        self.gfp = None      # NumPy 1D
-        self.peaks = None    # NumPy 1D
+        self.gfp = None  # NumPy 1D
+        self.peaks = None  # NumPy 1D
 
         # For opt_microstate outputs (kept NumPy-compatible for downstream code)
         self.cv = None
@@ -250,64 +297,69 @@ class MicrostateGPU:
         var = var / (self.n_t * (self.n_ch - 1))
         return var
 
-    # ---- peaks ----
     def gfp_peaks(self, distance=10, n_std=3):
-        # compute on CPU (NumPy), then keep indices
-        gfp = self.data_np.std(axis=1)
+        gfp = self.data.std(axis=1)
         # threshold window around mean ± n_std * std (same as original logic)
         peaks, _ = _signal.find_peaks(
             gfp,
             distance=distance,
-            height=(gfp.mean() - n_std * gfp.std(), gfp.mean() + n_std * gfp.std()),
+            height=(float(gfp.mean() - n_std * gfp.std()), float(gfp.mean() + n_std * gfp.std()))
         )
         self.gfp = gfp
         self.peaks = peaks
 
     # ---- core KMeans-like loop on GPU/CPU backend ----
-    def kmeans_modified(self, data, data_std, n_runs=100, n_maps=4, maxerr=1e-6, maxiter=1000, polarity=False):
+    def kmeans_modified(self, data, data_std, n_runs=100, n_maps=4,
+                        maxerr=1e-6, maxiter=1000, polarity=False):
         xp = self.xp
         n_gfp = data_std.shape[0]
-        cv_list = []
-        gev_list = []
-        maps_list = []
-        label_list = []
+
+        best_cv = float("inf")
+        best_result = None
 
         for run in range(n_runs):
-            if run == 0 or run == n_runs - 1:
-                print(f"GPU kmeans: {run + 1}/{n_runs}")
-            # init with random subset of time points
-            rndi = _np.random.permutation(int(n_gfp))[:n_maps]
+            # if run == 0 or run == n_runs - 1:
+            #     print(f"[GPU kmeans] run {run + 1}/{n_runs}")
+
+            # --- init maps ---
+            rndi = xp.random.permutation(n_gfp)[:n_maps]
             maps = MicrostateGPU.normalization(data[rndi, :], xp, axis=1)
 
+            var0, var1 = 1.0, 0.0
             n_iter = 0
-            var0 = 1.0
-            var1 = 0.0
-            while ((abs(var0 - var1) / var0 > maxerr) and (n_iter < maxiter)):
+
+            while (abs(var0 - var1) / var0 > maxerr) and (n_iter < maxiter):
                 n_iter += 1
-                # assignment step: argmax of squared correlation proxy (dot with normalized maps)
+
+                # --- assignment step ---
                 label = xp.argmax((data @ maps.T) ** 2, axis=1)
 
-                # update step: principal component of each cluster
+                # --- update step ---
                 for k in range(n_maps):
                     mask = (label == k)
                     if not xp.any(mask):
                         continue
-                    data_k = data[mask, :]
-                    maps[k, :] = MicrostateGPU.max_evec(data_k, xp, 0)
+                    Xk = data[mask, :]
+                    cov = Xk.T @ Xk
+                    # use power iteration instead of eigh
+                    v = xp.random.randn(self.n_ch, 1).astype(data.dtype)
+                    for _ in range(10):  # 10 iters usually enough
+                        v = cov @ v
+                        v /= xp.linalg.norm(v)
+                    maps[k, :] = v.ravel()
 
                 var1 = var0
                 var0 = MicrostateGPU.orthogonal_dist(data, maps[label, :], xp) / (n_gfp * (self.n_ch - 1))
 
-            # evaluate objective / criteria
-            label_opt, correlation, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
-            cv_list.append(_to_numpy(cv))
-            gev_list.append(_to_numpy(gev))
-            maps_list.append(_to_numpy(maps))
-            label_list.append(_to_numpy(label_opt))
+            # --- evaluate ---
+            label_opt, corr, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
+            if cv < best_cv:
+                best_cv = cv
+                best_result = (cv, gev, maps, label_opt)
 
-        # choose best by minimal CV (same as original criteria)
-        opt = int(_np.argmin(_np.asarray(cv_list, dtype=_np.float64)))
-        return cv_list[opt], gev_list[opt], maps_list[opt], label_list[opt]
+        # return only once (convert at the very end)
+        cv, gev, maps, label = best_result
+        return _to_numpy(cv), _to_numpy(gev), _to_numpy(maps), _to_numpy(label)
 
     def optimize_k(self, maps, data=None, data_std=None, polarity=False):
         xp = self.xp
@@ -337,17 +389,30 @@ class MicrostateGPU:
         # Find peaks on CPU
         self.gfp_peaks(distance=distance, n_std=n_std)
 
-        xp = self.xp
-        if peaks_only and self.peaks is not None and len(self.peaks) > 0:
-            temp_data_np = self.data_np[self.peaks]
-            temp_data = _to_xp(temp_data_np, xp)
-            temp_data_std = _to_xp(self.gfp[self.peaks], xp)
-            temp_max_maps = min(temp_data.shape[0], max_maps)
+        # Ensure peaks lives on xp as 1-D integer indices (no implicit host/device conversions)
+        has_peaks = (self.peaks is not None)
+        if has_peaks:
+            # .size is a Python int for both numpy/cupy; cheap and safe
+            try:
+                peaks_size = int(getattr(self.peaks, "size", len(self.peaks)))
+            except TypeError:
+                # In case len(self.peaks) is not supported (unlikely), fall back to xp.asarray
+                peaks_size = int(_as_xp_index(self.peaks, self.xp).size)
         else:
-            temp_data_np = self.data_np
-            temp_data = self.data
-            temp_data_std = _to_xp(self.gfp, xp)
-            temp_max_maps = min(temp_data.shape[0], max_maps)
+            peaks_size = 0
+        if peaks_only and has_peaks and peaks_size > 0:
+            peaks_xp = _as_xp_index(self.peaks, self.xp)  # 1-D int array on xp
+            # Slice directly on the device/XP to stay "all-xp"
+            # data shape is (T, C); peaks indexes time axis (axis=0)
+            temp_data = self.data[peaks_xp, :]  # xp array
+            temp_data_std = self.gfp[peaks_xp]  # xp array of shape (T_sel,)
+            # Max maps is bounded by number of selected rows (timepoints)
+            temp_max_maps = int(min(int(temp_data.shape[0]), max_maps))
+        else:
+            # No peak sub-sampling: just use full xp arrays
+            temp_data = self.data  # xp array
+            temp_data_std = self.gfp  # xp array
+            temp_max_maps = int(min(int(temp_data.shape[0]), max_maps))
 
         cv_list, gev_list, maps_list, label_list = [], [], [], []
 
