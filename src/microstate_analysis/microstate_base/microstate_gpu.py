@@ -302,7 +302,7 @@ class MicrostateGPU:
         lo = float(gfp_np.mean() - n_std * gfp_np.std())
         hi = float(gfp_np.mean() + n_std * gfp_np.std())
         peaks_np, _ = _np_find_peaks(gfp_np, distance=distance, height=(lo, hi))
-        self.gfp = _to_xp(gfp_np, xp)
+        self.gfp = _to_xp(gfp_np, self.xp)
         self.peaks = peaks_np
 
     # ---- core KMeans-like loop on GPU/CPU backend ----
