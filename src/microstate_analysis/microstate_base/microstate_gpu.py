@@ -435,8 +435,8 @@ class MicrostateGPU:
             raise NotImplementedError("GPU AAHC is not implemented in this module.")
 
         self.cv, self.gev, self.maps, self.label, k_star = best
-        self.opt_k = int(k_star)
-        self.opt_k_index = int(opt_k - min_maps)
+        self.opt_k = int(k_star) if opt_k else opt_k
+        self.opt_k_index = int(self.opt_k - min_maps)
         # keep full lists JSON-serializable
         self.cv_list = [float(c) for c in cv_list]
         self.gev_list = [g.tolist() for g in gev_list]
