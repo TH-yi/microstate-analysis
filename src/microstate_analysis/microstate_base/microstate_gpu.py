@@ -229,7 +229,7 @@ class MicrostateGPU:
         self.n_t = int(self.data.shape[0])
         self.n_ch = int(self.data.shape[1])
 
-        self.gfp = None  # NumPy 1D
+        self.gfp = None  # CuPy 1D
         self.peaks = None  # NumPy 1D
 
         # For opt_microstate outputs (kept NumPy-compatible for downstream code)
@@ -302,7 +302,7 @@ class MicrostateGPU:
         lo = float(gfp_np.mean() - n_std * gfp_np.std())
         hi = float(gfp_np.mean() + n_std * gfp_np.std())
         peaks_np, _ = _np_find_peaks(gfp_np, distance=distance, height=(lo, hi))
-        self.gfp = gfp_np
+        self.gfp = _to_xp(gfp_np, xp)
         self.peaks = peaks_np
 
     # ---- core KMeans-like loop on GPU/CPU backend ----
