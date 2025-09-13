@@ -220,7 +220,7 @@ class MicrostateGPU:
         self.xp = _xp(self.use_gpu)
 
         # keep a NumPy copy for CPU-only operations like find_peaks
-        self.data_np = _np.asarray(data, dtype=_np.float3)  # shape (n_t, n_ch) after transpose to match original
+        self.data_np = _np.asarray(data, dtype=_np.float32)  # shape (n_t, n_ch) after transpose to match original
         self.data_np = zero_mean(self.data_np, 1, _np).astype(_cp.float32 if self.use_gpu else _np.float32, copy=False)
 
         # GPU (or CPU) working copy
