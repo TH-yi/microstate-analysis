@@ -2,6 +2,7 @@ import numpy as np
 
 from microstate_analysis.microstate_base.microstate import Microstate
 from microstate_analysis.microstate_base.meanmicrostate import MeanMicrostate
+from microstate_analysis.microstate_base.microstate_gpu import MicrostateGPU
 
 def batch_microstate_state(data, topographies, task_name):
     for a_task_name in task_name:

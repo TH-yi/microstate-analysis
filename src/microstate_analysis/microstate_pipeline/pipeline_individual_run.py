@@ -7,14 +7,17 @@ Description:
   a single DualHandler. This avoids cross-process file contention and preserves
   strict log ordering.
 
-Core behavior:
-  1) Submit the first subject's tasks to fill the pool (up to max_workers).
-  2) While running, if the current subject has <=1 not-yet-submitted tasks,
-     preload the next subject's data to overlap I/O (but do NOT submit its tasks yet).
-  3) Prioritize submitting tasks from the current subject; only use idle slots for
-     preloaded next subjects when current is out of not-yet-submitted tasks.
-  4) As soon as a subject finishes (all its tasks complete), save results and evict
-     its arrays from memory.
+Core behavior (UPGRADED):
+  • Decouple "submission leader" from "completion leader":
+      - Submission leader: who gets PRIORITY for submitting tasks.
+      - Completion leader: who triggers dump/evict when all tasks finish.
+  • As soon as a subject has all tasks SUBMITTED (even if some are still running),
+    the submission leader advances to the next subject with pending submissions,
+    and prefetching is driven by the submission leader (pipeline-style).
+  • Prefetch next K subjects' input arrays to overlap I/O with computation.
+  • As soon as a subject has all tasks submitted, its input arrays can be evicted
+    from the main-process memory (pickle payload was already sent to workers).
+  • When a subject finishes (all tasks complete), persist results and evict results.
 
 Stability:
   - Pickle-only transport (no shared memory). Safe on Windows "spawn".
@@ -27,8 +30,9 @@ Centralized logging:
   - Messages include PID and subject|task for quick attribution.
   - error_callback is used so worker exceptions are surfaced immediately.
 
-Note:
+Notes:
   - This file assumes DualHandler has methods: log_info/log_warning/log_error.
+  - PipelineBase.dump_to_json(name WITHOUT extension) will append ".json" internally.
 """
 
 import os
@@ -58,12 +62,30 @@ class LogEvent:
     message: str     # already formatted line
 
 
-def _emit_log(q: Any, level: str, message: str) -> None:
-    """Send a log event to the main process queue."""
+# Module-level queue holder set by pool initializer (spawn-safe)
+_LOG_QUEUE: Any = None
+
+
+def _pool_initializer(log_queue: Any) -> None:
+    """
+    Called once per worker process just after it starts.
+    Stores the shared Queue into a module-level global for later use.
+    """
+    global _LOG_QUEUE
+    _LOG_QUEUE = log_queue
+
+
+def _emit_log(level: str, message: str) -> None:
+    """
+    Send a log event to the main process queue using the module-level queue.
+    Never raise inside logging to avoid masking real errors.
+    """
     try:
-        q.put(LogEvent(level=level, message=message))
+        q = _LOG_QUEUE
+        if q is not None:
+            q.put(LogEvent(level=level, message=message))
     except Exception:
-        # Last-resort fallback: do nothing to avoid crashing the worker
+        # Last-resort fallback: swallow logging failures
         pass
 
 
@@ -139,10 +161,10 @@ def _as_channels_times(x: np.ndarray) -> np.ndarray:
     return x.T if h > w else x
 
 
-def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray], log_queue: Any) -> dict:
+def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray]) -> dict:
     """
     Worker entry (pickle-only): use the pickled ndarray, normalize it, then run batch_microstate.
-    The worker does NOT write files; it pushes log events to the main process.
+    The worker does NOT write files; it pushes log events to the main process via _emit_log.
     """
     pid = os.getpid()
 
@@ -151,7 +173,7 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray], log_queue: A
             raise ValueError("Worker received no data (pickle payload is None).")
 
         _emit_log(
-            log_queue, "info",
+            "info",
             (f"[pid={pid}] Start task: {spec.subject} | {spec.task} | "
              f"peaks_only={spec.peaks_only} min_maps={spec.min_maps} max_maps={spec.max_maps} "
              f"method={spec.method} n_std={spec.n_std} n_runs={spec.n_runs} use_gpu={spec.use_gpu}")
@@ -176,10 +198,14 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray], log_queue: A
         ]
         task_microstate = batch_microstate(batch_params)
 
+        # Safe int conversion for opt_k_index (can be None in rare cases)
+        oki = task_microstate.opt_k_index
+        oki_sanitized = -1 if oki is None else int(oki)
+
         _emit_log(
-            log_queue, "info",
+            "info",
             (f"[pid={pid}] Finished task: {spec.subject} | {spec.task} | "
-             f"opt_k={task_microstate.opt_k}, opt_k_index={int(task_microstate.opt_k_index)}")
+             f"opt_k={task_microstate.opt_k}, opt_k_index={oki_sanitized}")
         )
 
         return {
@@ -189,12 +215,12 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray], log_queue: A
             'gev_list': task_microstate.gev_list,
             'maps_list': task_microstate.maps_list,
             'opt_k': task_microstate.opt_k,
-            'opt_k_index': int(task_microstate.opt_k_index),
+            'opt_k_index': oki_sanitized,
             'min_maps': spec.min_maps,
             'max_maps': spec.max_maps,
         }
     except Exception as e:
-        _emit_log(log_queue, "error", f"[pid={pid}] Worker failed ({spec.subject} | {spec.task}): {e}")
+        _emit_log("error", f"[pid={pid}] Worker failed ({spec.subject} | {spec.task}): {e}")
         # Re-raise to trigger error_callback in the main process
         raise
 
@@ -238,7 +264,7 @@ class PipelineIndividualRun(PipelineBase):
         with open(path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
 
-        out = {}
+        out: Dict[str, np.ndarray] = {}
         for t in self.task_name:
             arr = list_to_matrix(raw[t])
             if not isinstance(arr, np.ndarray):
@@ -256,6 +282,11 @@ class PipelineIndividualRun(PipelineBase):
                                      prefetch_depth: int = 1) -> None:
         """
         Run with a single global pool (pickle-only) and centralized logging.
+        UPGRADED submission strategy:
+          - Drive prefetch and priority by "submission leader".
+          - As soon as a subject has ALL tasks SUBMITTED, advance submission leader
+            and optionally evict its input arrays from memory (data_cache).
+          - Completion (dump/evict results) remains per-subject when all tasks finish.
         """
         cpu = os.cpu_count() or 1
         n_proc = min(max(1, cpu), max_processes or cpu)
@@ -271,12 +302,20 @@ class PipelineIndividualRun(PipelineBase):
         results_per_subject: Dict[str, OrderedDict] = {s: OrderedDict() for s in self.subjects}
         optk_per_subject: Dict[str, Dict[str, int]] = {s: {} for s in self.subjects}
 
-        # Cache at most two subjects in memory: current + preloaded next
+        # Cache at most: submission leader + up to prefetch_depth subjects
         data_cache: Dict[str, Dict[str, np.ndarray]] = {}
         preloaded_flags: Dict[str, bool] = defaultdict(bool)
 
         # Active async results: key=(subject, task) -> AsyncResult
         inflight: Dict[Tuple[str, str], Any] = {}
+
+        # Completion leader (used only for dump/evict results)
+        current_index = 0
+        current_subject = self.subjects[current_index]
+
+        # Submission leader (drives prefetch & priority of submissions)
+        current_submit_index = 0
+        current_submit_subject = self.subjects[current_submit_index]
 
         ctx = get_context("spawn")
         log_queue = ctx.Queue()  # cross-process log queue
@@ -292,7 +331,7 @@ class PipelineIndividualRun(PipelineBase):
             # Immediate visibility on worker exceptions
             self.logger.log_error(f"[main] Worker error on {subject} | {task}: {exc}")
 
-        with ctx.Pool(processes=n_proc) as pool:
+        with ctx.Pool(processes=n_proc, initializer=_pool_initializer, initargs=(log_queue,)) as pool:
 
             def submit_task(subject: str, task: str):
                 """
@@ -309,35 +348,35 @@ class PipelineIndividualRun(PipelineBase):
                 )
                 ar = pool.apply_async(
                     _worker_task,
-                    (spec, arr, log_queue),
+                    (spec, arr),
                     error_callback=lambda e, s=subject, t=task: on_error(e, s, t)
                 )
                 inflight[(subject, task)] = ar
 
-            # ------------------ Phase 1: submit first batch from the first subject ------------------
-            current_index = 0
-            current_subject = self.subjects[current_index]
+            # ------------------ Phase 1: preload + fill pool from the FIRST submission leader ------------------
+            # Preload submission leader
+            data_cache[current_submit_subject] = self._load_subject_data(current_submit_subject)
+            preloaded_flags[current_submit_subject] = True
+            self.logger.log_info(f"[main] Preloaded subject (submit leader): {current_submit_subject}")
 
-            # Load the very first subject
-            data_cache[current_subject] = self._load_subject_data(current_subject)
-            self.logger.log_info(f"[main] Preloaded subject: {current_subject}")
+            # Fill the pool with tasks from the submission leader only
+            while len(inflight) < n_proc and pending_submit[current_submit_subject]:
+                task = pending_submit[current_submit_subject].popleft()
+                submit_task(current_submit_subject, task)
 
-            # Fill the pool with tasks from the first subject only
-            while len(inflight) < n_proc and pending_submit[current_subject]:
-                task = pending_submit[current_subject].popleft()
-                submit_task(current_subject, task)
-
-            # ------------------ Phase 2: main loop (prefetch + completion + scheduling) --------------
+            # ------------------ Phase 2: main loop (prefetch + completion + submission) ------------------
             while inflight or any(pending_submit[s] for s in self.subjects):
+                did_submit = False  # track whether we submitted anything this iteration
 
-                # (A) Prefetch: if current subject has <=1 not-yet-submitted tasks, preload next subject(s)
-                remain_to_submit = len(pending_submit[current_subject])
-                if remain_to_submit <= 1:
+                # (A) Prefetch driven by SUBMISSION LEADER:
+                #     If the submission leader has <=2 not-yet-submitted tasks, start preloading next subjects.
+                remain_to_submit = len(pending_submit[current_submit_subject])
+                if remain_to_submit <= 2:
                     for k in range(1, prefetch_depth + 1):
-                        nxt_idx = current_index + k
+                        nxt_idx = current_submit_index + k
                         if nxt_idx < len(self.subjects):
                             nxt = self.subjects[nxt_idx]
-                            if not preloaded_flags[nxt]:
+                            if not preloaded_flags.get(nxt, False):
                                 try:
                                     data_cache[nxt] = self._load_subject_data(nxt)
                                     preloaded_flags[nxt] = True
@@ -345,18 +384,49 @@ class PipelineIndividualRun(PipelineBase):
                                 except Exception as e:
                                     self.logger.log_warning(f"[main] Prefetch failed for {nxt}: {e}")
 
-                # (B) Submit: prioritize current subject; if none, use idle slots for next preloaded subjects
+                # (B0) Advance SUBMISSION LEADER if it has NO pending submissions left.
+                if not pending_submit[current_submit_subject]:
+                    # The leader has submitted all its tasks → we can evict its INPUT arrays now.
+                    if current_submit_subject in data_cache:
+                        try:
+                            del data_cache[current_submit_subject]
+                        except Exception:
+                            pass
+                        gc.collect()
+
+                    # Move submission leader to the next subject that still has pending submissions.
+                    next_submit = None
+                    for ii in range(current_submit_index + 1, len(self.subjects)):
+                        nxt_s = self.subjects[ii]
+                        if pending_submit[nxt_s]:  # still has tasks to submit
+                            next_submit = ii
+                            break
+                    if next_submit is not None:
+                        current_submit_index = next_submit
+                        current_submit_subject = self.subjects[current_submit_index]
+                        # Ensure the new submission leader is preloaded immediately.
+                        if not preloaded_flags.get(current_submit_subject, False):
+                            try:
+                                data_cache[current_submit_subject] = self._load_subject_data(current_submit_subject)
+                                preloaded_flags[current_submit_subject] = True
+                                self.logger.log_info(f"[main] Preloaded subject (submit leader): {current_submit_subject}")
+                            except Exception as e:
+                                self.logger.log_warning(f"[main] On-lead prefetch failed for {current_submit_subject}: {e}")
+
+                # (B1) SUBMIT: prioritize submission leader; if none, use idle slots for preloaded next subjects.
                 while len(inflight) < n_proc:
-                    if pending_submit[current_subject]:
-                        task = pending_submit[current_subject].popleft()
-                        submit_task(current_subject, task)
+                    if pending_submit[current_submit_subject]:
+                        task = pending_submit[current_submit_subject].popleft()
+                        submit_task(current_submit_subject, task)
+                        did_submit = True
                     else:
                         advanced = False
-                        for nxt_idx in range(current_index + 1, len(self.subjects)):
+                        for nxt_idx in range(current_submit_index + 1, len(self.subjects)):
                             nxt = self.subjects[nxt_idx]
                             if pending_submit[nxt] and preloaded_flags.get(nxt, False):
                                 task = pending_submit[nxt].popleft()
                                 submit_task(nxt, task)
+                                did_submit = True
                                 advanced = True
                                 break
                         if not advanced:
@@ -387,17 +457,18 @@ class PipelineIndividualRun(PipelineBase):
                     # Update pending task count and finalize subject if done
                     pending_count[subj] -= 1
                     if pending_count[subj] == 0:
-                        # Persist & evict
-                        self.dump_to_json(results_per_subject[subj], self.output_dir, f'{subj}_individual_maps.json')
-                        self.logger.log_info(f"[main] Finished subject: {subj} (evicting from memory)")
+                        # Persist & evict results for this subject
+                        # NOTE: pass name WITHOUT ".json"; PipelineBase will append suffix.
+                        self.dump_to_json(results_per_subject[subj], self.output_dir, f'{subj}_individual_maps')
+                        self.logger.log_info(f"[main] Finished subject: {subj} (evicting results from memory)")
                         results_per_subject[subj] = None  # free references
 
-                        # Evict data cache
+                        # Evict any stray input cache (in case not removed earlier)
                         if subj in data_cache:
                             del data_cache[subj]
                         gc.collect()
 
-                        # If the finished subject is the current subject, advance the "current"
+                        # Advance COMPLETION LEADER if this subject was the current one
                         if subj == current_subject:
                             next_cur = None
                             for ii in range(current_index + 1, len(self.subjects)):
@@ -408,8 +479,8 @@ class PipelineIndividualRun(PipelineBase):
                                 current_index = next_cur
                                 current_subject = self.subjects[current_index]
 
-                # (D) Small cooperative sleep to avoid busy spinning
-                if not completed and len(inflight) >= n_proc:
+                # (D) Cooperative sleep to avoid busy spinning
+                if not completed and not did_submit:
                     time.sleep(0.01)
 
             # End while: all tasks done; pool closed/joined by context manager
@@ -429,6 +500,7 @@ class PipelineIndividualRun(PipelineBase):
             task_wise_map_counts = [
                 {"subject": s, "opt_k": optk_per_subject[s]} for s in self.subjects
             ]
+            # Pass name WITHOUT ".json"; PipelineBase will append suffix.
             self.dump_to_json(task_wise_map_counts, task_map_counts_output_dir, task_map_counts_output_filename)
 
     # ---------- Pickling safety ----------
@@ -447,6 +519,7 @@ class PipelineIndividualRun(PipelineBase):
 # ------------------------- CLI-like example -------------------------
 
 if __name__ == '__main__':
+    # Example wiring; adjust paths and flags for your environment
     subjects = ['sub_01', 'sub_02', 'sub_03', 'sub_04', 'sub_05', 'sub_06', 'sub_07', 'sub_08', 'sub_09', 'sub_10',
                 'sub_11', 'sub_12', 'sub_13', 'sub_14', 'sub_15', 'sub_16', 'sub_17', 'sub_18', 'sub_19', 'sub_20',
                 'sub_21', 'sub_22', 'sub_23', 'sub_24', 'sub_25', 'sub_26', 'sub_27', 'sub_28']
@@ -470,11 +543,11 @@ if __name__ == '__main__':
     individual_log_suffix = ''  # centralized logger only, worker logs go through queue
     task_map_counts_output_dir = '../../../storage/microstate_output/individual_run'
     task_map_counts_output_filename = 'individual_map_counts'
-    max_processes = 8
+    max_processes = 15
     cluster_method = 'kmeans_modified'
     n_std = 3
     n_runs = 100
-    use_gpu = True
+    use_gpu = False
 
     job = PipelineIndividualRun(
         log_dir=individual_log_dir, prefix=individual_log_prefix, suffix=individual_log_suffix,

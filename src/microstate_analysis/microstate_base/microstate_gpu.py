@@ -220,11 +220,12 @@ class MicrostateGPU:
         self.xp = _xp(self.use_gpu)
 
         # keep a NumPy copy for CPU-only operations like find_peaks
-        self.data_np = _np.asarray(data, dtype=_np.float32)  # shape (n_t, n_ch) after transpose to match original
-        self.data_np = zero_mean(self.data_np, 1, _np).astype(_cp.float32 if self.use_gpu else _np.float32, copy=False)
+        data_np = _np.asarray(data, dtype=_np.float32)
+        data_np = zero_mean(data_np, 1, _np)  # (T, C)
+        self.data = _to_xp(data_np, self.xp)  # GPU
+        del data_np
+        self.n_t, self.n_ch = int(self.data.shape[0]), int(self.data.shape[1])
 
-        # GPU (or CPU) working copy
-        self.data = _to_xp(self.data_np, self.xp)
 
         self.n_t = int(self.data.shape[0])
         self.n_ch = int(self.data.shape[1])
@@ -310,12 +311,13 @@ class MicrostateGPU:
         return var
 
     def gfp_peaks(self, distance=10, n_std=3):
-        gfp_np = self.data_np.std(axis=1)  # CPU NumPy
-        lo = float(gfp_np.mean() - n_std * gfp_np.std())
-        hi = float(gfp_np.mean() + n_std * gfp_np.std())
+        xp = self.xp
+        gfp_xp = xp.std(self.data, axis=1)
+        gfp_np = _to_numpy(gfp_xp)
+        lo, hi = float(gfp_np.mean() - n_std * gfp_np.std()), float(gfp_np.mean() + n_std * gfp_np.std())
         peaks_np, _ = _np_find_peaks(gfp_np, distance=distance, height=(lo, hi))
-        self.gfp = _to_xp(gfp_np, self.xp)
-        self.peaks = peaks_np
+        self.gfp = gfp_xp
+        self.peaks = peaks_np.astype(_np.int64, copy=False)
 
     def _assign_labels_blocked(self, data, maps, block_rows=65536):
         xp = self.xp
@@ -345,7 +347,7 @@ class MicrostateGPU:
 
             # --- init maps ---
             rndi = xp.random.permutation(n_gfp)[:n_maps]
-            maps = MicrostateGPU.normalization(data[rndi, :], xp, axis=1)
+            maps = self.normalization(data[rndi, :], xp, axis=1)
 
             var0, var1 = 1.0, 0.0
             n_iter = 0
@@ -358,8 +360,11 @@ class MicrostateGPU:
 
                 # --- update step ---
                 for k in range(n_maps):
-                    data_k = data[label == k, :]
-                    maps[k, :] = MicrostateGPU.max_evec(data_k, xp, 0)
+                    mk = (label == k)
+                    if int(mk.sum()) == 0:
+                        continue
+                    # Compute principal eigenvector via blocked Gram accumulation
+                    maps[k, :] = self._max_evec_from_mask_gram(data, mk, block_rows=65536)
 
                 var1 = var0
                 var0 = MicrostateGPU.orthogonal_dist(data, maps[label, :], xp) / (n_gfp * (self.n_ch - 1))
@@ -376,7 +381,73 @@ class MicrostateGPU:
         cv, gev, maps, label = best_result
         return _to_numpy(cv), _to_numpy(gev), _to_numpy(maps), _to_numpy(label)
 
-    def optimize_k(self, maps, data=None, data_std=None, polarity=False):
+    def _max_evec_from_mask_gram(self, data, mask, block_rows: int = 65536):
+        """
+        Compute the principal eigenvector of (V^T V) for the subset V = data[mask, :]
+        WITHOUT materializing the whole V in memory.
+
+        Idea:
+          - Accumulate the Gram matrix G = sum(chunk^T @ chunk) over small blocks.
+          - Then run eigh(G) (G is CxC and tiny compared to V).
+          - This avoids allocating a huge (Nk x C) array for large clusters.
+
+        Args
+        ----
+        data : xp.ndarray, shape (T, C)
+            Full data matrix (already on the correct backend, NumPy or CuPy).
+        mask : xp.ndarray[bool], shape (T,)
+            Boolean mask for the rows belonging to the current cluster.
+            Must live on the same backend (NumPy/CuPy) as `data`.
+        block_rows : int
+            Number of rows per block when accumulating G.
+
+        Returns
+        -------
+        c : xp.ndarray, shape (C,)
+            Normalized principal eigenvector of (V^T V).
+        """
+        xp = self.xp
+        # Ensure boolean dtype on the right backend (no host/device ping-pong)
+        if mask.dtype != xp.bool_:
+            mask = mask.astype(xp.bool_, copy=False)
+
+        C = int(data.shape[1])
+        G = xp.zeros((C, C), dtype=data.dtype)
+
+        # Get indices of the selected rows on the same backend
+        # `_as_xp_index` keeps the index array on-device for CuPy.
+        idx = _as_xp_index(xp.where(mask)[0], xp)
+        n = int(idx.size)
+        if n == 0:
+            # Degenerate cluster (should be filtered by caller),
+            # return a default unit vector to be safe.
+            c = xp.zeros((C,), dtype=data.dtype)
+            c[0] = 1
+            return c
+
+        # Blocked accumulation: G += chunk^T @ chunk
+        for start in range(0, n, block_rows):
+            stop = min(start + block_rows, n)
+            ids = idx[start:stop]
+            chunk = data[ids, :]  # (b, C) lives only for this block
+            G += chunk.T @ chunk  # (C, C)
+            del chunk
+
+        # EVD on tiny symmetric matrix (C x C)
+        evals, evecs = xp.linalg.eigh(G)  # stable for symmetric PSD matrices
+        k = xp.argmax(evals)  # largest eigenvalue index
+        c = evecs[:, k]
+
+        # L2 normalize, protect against numerical edge cases
+        nrm = xp.linalg.norm(c)
+        if nrm == 0:
+            c = xp.zeros((C,), dtype=data.dtype)
+            c[0] = 1
+            return c
+
+        return (c / nrm).astype(data.dtype, copy=False)
+
+    def optimize_k(self, maps, data=None, data_std=None, polarity=False, block_rows=65536):
         xp = self.xp
         if data is None or data_std is None:
             data = self.data
@@ -417,7 +488,7 @@ class MicrostateGPU:
         cv = self.cross_validation(var, n_maps)
 
         # return NumPy to keep parity with CPU code elsewhere
-        return _to_numpy(label), float(_to_numpy(cv)), _to_numpy(gev)
+        return _to_numpy(labels), float(_to_numpy(cv)), _to_numpy(gev)
 
     def opt_microstate(self, min_maps=2, max_maps=10, distance=10, n_std=3, n_runs=10, maxerr=1e-6, maxiter=1000,
                        polarity=False, peaks_only=True, method='kmeans_modified', opt_k=None):
