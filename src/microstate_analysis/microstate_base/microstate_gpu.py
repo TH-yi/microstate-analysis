@@ -293,8 +293,20 @@ class MicrostateGPU:
 
     def variance(self, label, maps, data):
         xp = self.xp
-        var = xp.sum(data ** 2) - xp.sum(xp.sum(maps[label, :] * data, axis=1) ** 2)
-        var = var / (self.n_t * (self.n_ch - 1))
+        n_t = int(data.shape[0])
+        sum_sq = xp.sum(data ** 2)
+        proj_sq = xp.array(0.0, dtype=data.dtype)
+
+        n_maps = int(maps.shape[0])
+        for k in range(n_maps):
+            mk = (label == k)
+            if int(mk.sum()) == 0:
+                continue
+            Vk = data[mk, :]  # (Nk, C)
+            s = Vk @ maps[k, :].reshape(-1, 1)  # (Nk, 1)
+            proj_sq += xp.sum(s ** 2)
+            del Vk, s, mk
+        var = (sum_sq - proj_sq) / (n_t * (self.n_ch - 1))
         return var
 
     def gfp_peaks(self, distance=10, n_std=3):
@@ -304,6 +316,19 @@ class MicrostateGPU:
         peaks_np, _ = _np_find_peaks(gfp_np, distance=distance, height=(lo, hi))
         self.gfp = _to_xp(gfp_np, self.xp)
         self.peaks = peaks_np
+
+    def _assign_labels_blocked(self, data, maps, block_rows=65536):
+        xp = self.xp
+        n = int(data.shape[0])
+        labels = xp.empty(n, dtype=xp.int32)
+        Wt = maps.T  # (C, K)
+        for i in range(0, n, block_rows):
+            j = min(i + block_rows, n)
+            S = data[i:j] @ Wt  # (b, K)
+            xp.multiply(S, S, out=S)
+            labels[i:j] = xp.argmax(S, axis=1).astype(xp.int32, copy=False)
+            del S
+        return labels
 
     # ---- core KMeans-like loop on GPU/CPU backend ----
     def kmeans_modified(self, data, data_std, n_runs=100, n_maps=4,
@@ -329,7 +354,7 @@ class MicrostateGPU:
                 n_iter += 1
 
                 # --- assignment step ---
-                label = xp.argmax((data @ maps.T) ** 2, axis=1)
+                label = self._assign_labels_blocked(data, maps)
 
                 # --- update step ---
                 for k in range(n_maps):
@@ -340,11 +365,13 @@ class MicrostateGPU:
                 var0 = MicrostateGPU.orthogonal_dist(data, maps[label, :], xp) / (n_gfp * (self.n_ch - 1))
 
             # --- evaluate ---
-            label_opt, corr, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
+            label_opt, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
             if cv < best_cv:
                 best_cv = cv
                 best_result = (cv, gev, maps, label_opt)
-
+            if self.use_gpu and n_iter % 5 == 0:
+                _cp.get_default_memory_pool().free_all_blocks()
+                _cp.get_default_pinned_memory_pool().free_all_blocks()
         # return only once (convert at the very end)
         cv, gev, maps, label = best_result
         return _to_numpy(cv), _to_numpy(gev), _to_numpy(maps), _to_numpy(label)
@@ -356,21 +383,41 @@ class MicrostateGPU:
             data_std = _to_xp(self.gfp, xp)
 
         n_maps = int(maps.shape[0])
-        maps_zn = zero_mean(maps, 1, xp)
-        # correlation over all time points
-        correlation = MicrostateGPU.spatial_correlation(
-            data, maps_zn.T, data_std, maps.std(axis=1), self.n_ch, xp
-        )
-        if not polarity:
-            correlation = xp.abs(correlation)
+        maps_zn = zero_mean(maps, 1, xp)  # (K, C)
+        Wt = maps_zn.T  # (C, K)
+        smaps = maps.std(axis=1)  # (K,)
+        n = int(data.shape[0])
 
-        label = xp.argmax(correlation, axis=1)
-        var = self.variance(label=label, maps=maps, data=data)
+        labels = xp.empty(n, dtype=xp.int32)
+        gev_acc = xp.zeros(n_maps, dtype=data.dtype)
+        denom = xp.sum(data_std ** 2)
+
+        for i in range(0, n, block_rows):
+            j = min(i + block_rows, n)
+            S = data[i:j] @ Wt  # (b, K)
+            S /= self.n_ch
+            S /= data_std[i:j][:, None]
+            S /= smaps[None, :]
+            if not polarity:
+                S = xp.abs(S)
+
+            lab = xp.argmax(S, axis=1).astype(xp.int32, copy=False)
+            labels[i:j] = lab
+
+            ds2 = data_std[i:j] ** 2
+            for k in range(n_maps):
+                mk = (lab == k)
+                if int(mk.sum()) == 0:
+                    continue
+                gev_acc[k] += xp.sum(ds2[mk] * (S[mk, k] ** 2))
+            del S, lab, ds2
+
+        gev = gev_acc / denom
+        var = self.variance(label=labels, maps=maps, data=data)
         cv = self.cross_validation(var, n_maps)
-        gev = MicrostateGPU.global_explained_variance(n_maps, correlation, label, data_std, xp)
 
         # return NumPy to keep parity with CPU code elsewhere
-        return _to_numpy(label), _to_numpy(correlation), float(_to_numpy(cv)), _to_numpy(gev)
+        return _to_numpy(label), float(_to_numpy(cv)), _to_numpy(gev)
 
     def opt_microstate(self, min_maps=2, max_maps=10, distance=10, n_std=3, n_runs=10, maxerr=1e-6, maxiter=1000,
                        polarity=False, peaks_only=True, method='kmeans_modified', opt_k=None):

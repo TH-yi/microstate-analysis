@@ -353,8 +353,7 @@ class Microstate:
         # GPU delegation when available
         if getattr(self, "_gpu", None) is not None:
             cv, gev, maps, label = self._gpu.kmeans_modified(
-                data=self._gpu.xp.asarray(data) if hasattr(self._gpu, "xp") else data,
-                data_std=self._gpu.xp.asarray(data_std) if hasattr(self._gpu, "xp") else data_std,
+                data=data, data_std=self._gpu.xp.asarray(data_std) if hasattr(self._gpu, "xp") else data_std,
                 n_runs=n_runs, n_maps=n_maps, maxerr=maxerr, maxiter=maxiter, polarity=polarity)
             return cv, gev, maps, label
         n_gfp = data_std.shape[0]
@@ -381,7 +380,7 @@ class Microstate:
                 var0 = Microstate.orthogonal_dist(data, maps[label, :])
                 var0 /= (n_gfp * (self.n_ch - 1))
 
-            label, correlation, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
+            label, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
             cv_list.append(cv)
             gev_list.append(gev)
             maps_list.append(maps)
@@ -473,7 +472,7 @@ class Microstate:
         var = self.variance(label=label, maps=maps, data=data)
         cv = self.cross_validation(var, n_maps)
         gev = self.global_explained_variance(n_maps=n_maps, correlation=correlation, label=label, data_std=data_std)
-        return label, correlation, cv, gev
+        return label, cv, gev
 
     def aahc(self, data, data_std, min_maps, max_maps, polarity=False):
         maps = data
