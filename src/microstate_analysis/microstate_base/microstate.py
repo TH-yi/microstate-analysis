@@ -371,6 +371,8 @@ class Microstate:
             var0 = 1.0
             var1 = 0.0
             while ((np.abs(var0 - var1) / var0 > maxerr) & (n_iter < maxiter)):
+                n_iter += 1
+
                 label = np.argmax(np.dot(data, maps.T) ** 2, axis=1)
                 for k in range(n_maps):
                     data_k = data[label == k, :]

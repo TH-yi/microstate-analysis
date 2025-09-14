@@ -333,17 +333,8 @@ class MicrostateGPU:
 
                 # --- update step ---
                 for k in range(n_maps):
-                    mask = (label == k)
-                    if not xp.any(mask):
-                        continue
-                    Xk = data[mask, :]
-                    cov = Xk.T @ Xk
-                    # use power iteration instead of eigh
-                    v = xp.random.randn(self.n_ch, 1).astype(self.data.dtype)
-                    for _ in range(10):  # 10 iters usually enough
-                        v = cov @ v
-                        v /= xp.linalg.norm(v)
-                    maps[k, :] = v.ravel()
+                    data_k = data[label == k, :]
+                    maps[k, :] = MicrostateGPU.max_evec(data_k, 0)
 
                 var1 = var0
                 var0 = MicrostateGPU.orthogonal_dist(data, maps[label, :], xp) / (n_gfp * (self.n_ch - 1))
