@@ -52,6 +52,12 @@ from microstate_analysis.logger.dualhandler import DualHandler
 from microstate_analysis.microstate_base.microstate_batch_handler import batch_microstate
 from microstate_analysis.microstate_base.data_handler import list_to_matrix
 
+_GPU_SEM: Any = None        # multiprocessing.Manager().Semaphore(1)
+_GPU_WAIT_Q: Any = None     # multiprocessing.Manager().Queue(maxsize=1)
+_GPU_THRESHOLD: int = 80_000
+
+# Module-level queue holder set by pool initializer (spawn-safe)
+_LOG_QUEUE: Any = None
 
 # ------------------------- Log event helpers -------------------------
 
@@ -62,17 +68,21 @@ class LogEvent:
     message: str     # already formatted line
 
 
-# Module-level queue holder set by pool initializer (spawn-safe)
-_LOG_QUEUE: Any = None
 
-
-def _pool_initializer(log_queue: Any) -> None:
+def _pool_initializer(log_queue: Any,
+                      gpu_sem: Any = None,
+                      gpu_wait_q: Any = None,
+                      gpu_threshold: int = 80_000) -> None:
     """
     Called once per worker process just after it starts.
-    Stores the shared Queue into a module-level global for later use.
+    Stores the shared log queue and (optionally) the GPU gating primitives.
     """
-    global _LOG_QUEUE
+    global _LOG_QUEUE, _GPU_SEM, _GPU_WAIT_Q, _GPU_THRESHOLD
     _LOG_QUEUE = log_queue
+    _GPU_SEM = gpu_sem
+    _GPU_WAIT_Q = gpu_wait_q
+    _GPU_THRESHOLD = int(gpu_threshold)
+
 
 
 def _emit_log(level: str, message: str) -> None:
@@ -184,6 +194,54 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray]) -> dict:
         # 2) Normalize to (channels, times) so Microstate(...).T -> (times, channels)
         task_data = _as_channels_times(task_data)
 
+        # Decide whether to use GPU for THIS task under gating policy
+        use_gpu_for_this_task = False
+        acquired_sem = False
+        took_wait_slot = False
+
+        if spec.use_gpu and (_GPU_SEM is not None):
+            n_points = int(task_data.shape[1])  # (channels, times) -> times as "points"
+
+            # Try immediate GPU if free
+            try:
+                acquired_sem = _GPU_SEM.acquire(block=False)
+            except Exception:
+                acquired_sem = False
+
+            if acquired_sem:
+                _emit_log("info", "GPU free, assign to GPU")
+                use_gpu_for_this_task = True
+            else:
+                # GPU busy: only let "big" tasks queue up, and allow at most ONE waiting slot.
+                is_big = (n_points >= int(_GPU_THRESHOLD))
+                if is_big and (_GPU_WAIT_Q is not None):
+                    try:
+                        _GPU_WAIT_Q.put_nowait(1)  # reserve the single waiting slot
+                        _emit_log("info", f"GPU busy, queue big task (points={n_points})")
+                        took_wait_slot = True
+                    except Exception:
+                        took_wait_slot = False
+
+                    if took_wait_slot:
+                        # Block with a timeout so the waiting slot won't leak forever
+                        try:
+                            acquired_sem = _GPU_SEM.acquire(timeout=None) # implement timeout if you want
+                        except Exception:
+                            acquired_sem = False
+
+                        if acquired_sem:
+                            use_gpu_for_this_task = True
+                        else:
+                            # timeout -> drop waiting slot and fall back to CPU
+                            try:
+                                _GPU_WAIT_Q.get_nowait()
+                            except Exception:
+                                pass
+                            took_wait_slot = False
+                else:
+                    _emit_log("info", f"GPU busy, not assigning to GPU (points={n_points})")
+
+
         # Prepare parameters for microstate batching
         batch_params = [
             task_data,
@@ -194,7 +252,7 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray]) -> dict:
             spec.method,
             spec.n_std,
             spec.n_runs,
-            spec.use_gpu,
+            bool(use_gpu_for_this_task),
         ]
         task_microstate = batch_microstate(batch_params)
 
@@ -326,12 +384,22 @@ class PipelineIndividualRun(PipelineBase):
             target=_drain_log_queue, args=(log_queue, self.logger, STOP), daemon=True
         )
         log_thread.start()
-
+        # create shared GPU gating primitives when GPU is enabled
+        gpu_sem = None
+        gpu_wait_q = None
+        if self.use_gpu:
+            mgr = ctx.Manager()  # SyncManager (non-daemon server proc)
+            gpu_sem = mgr.Semaphore(1)  # only one concurrent GPU user
+            gpu_wait_q = mgr.Queue(maxsize=1)  # allow at most one "waiting" big task
+            gpu_threshold = 80_000  # points threshold (timepoints)
+        else:
+            gpu_threshold = 0
         def on_error(exc: BaseException, subject: str, task: str):
             # Immediate visibility on worker exceptions
             self.logger.log_error(f"[main] Worker error on {subject} | {task}: {exc}")
 
-        with ctx.Pool(processes=n_proc, initializer=_pool_initializer, initargs=(log_queue,)) as pool:
+        with ctx.Pool(processes=n_proc, initializer=_pool_initializer,
+                      initargs=(log_queue,gpu_sem, gpu_wait_q, gpu_threshold)) as pool:
 
             def submit_task(subject: str, task: str):
                 """
@@ -491,6 +559,12 @@ class PipelineIndividualRun(PipelineBase):
         except Exception:
             pass
         log_thread.join(timeout=5)
+
+        if self.use_gpu:
+            try:
+                mgr.shutdown()
+            except Exception as e:
+                self.logger.log_error(f"Failed shutdown GPU queue manager: {e}")
 
         # (E) Save task-wise map counts if requested
         if save_task_map_counts:
