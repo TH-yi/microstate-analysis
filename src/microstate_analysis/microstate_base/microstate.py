@@ -419,10 +419,10 @@ class Microstate:
 
         if method == 'kmeans_modified':
             for n_maps in range(min_maps, temp_max_maps + 1):
-                # if n_maps == min_maps or n_maps == max_maps or n_maps % 5 == 0:
-                #     print(
-                #         "kmeans_number:{number}/{maxi} will run {runs} times".format(number=n_maps, maxi=temp_max_maps,
-                #                                                                      runs=n_runs))
+                if n_maps == min_maps or n_maps == max_maps or n_maps % 5 == 0:
+                    print(
+                        "kmeans_number:{number}/{maxi} will run {runs} times".format(number=n_maps, maxi=temp_max_maps,
+                                                                                     runs=n_runs))
                 cv, gev, maps, label = self.kmeans_modified(data=temp_data, data_std=temp_data_std, n_runs=n_runs,
                                                             n_maps=n_maps, maxerr=maxerr, maxiter=maxiter,
                                                             polarity=polarity)

@@ -204,8 +204,10 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray]) -> dict:
 
             # Try immediate GPU if free
             try:
-                acquired_sem = _GPU_SEM.acquire(block=False)
-            except Exception:
+                acquired_sem = _GPU_SEM.acquire(blocking=False)
+                _emit_log("Info", (f"Successfully acquire gpu sem: {acquired_sem}"))
+            except Exception as e:
+                _emit_log("Warning", (f"acquire gpu sem failed: {e}"))
                 acquired_sem = False
 
             if acquired_sem:
@@ -617,11 +619,11 @@ if __name__ == '__main__':
     individual_log_suffix = ''  # centralized logger only, worker logs go through queue
     task_map_counts_output_dir = '../../../storage/microstate_output/individual_run'
     task_map_counts_output_filename = 'individual_map_counts'
-    max_processes = 15
+    max_processes = 20
     cluster_method = 'kmeans_modified'
     n_std = 3
     n_runs = 100
-    use_gpu = False
+    use_gpu = True
 
     job = PipelineIndividualRun(
         log_dir=individual_log_dir, prefix=individual_log_prefix, suffix=individual_log_suffix,

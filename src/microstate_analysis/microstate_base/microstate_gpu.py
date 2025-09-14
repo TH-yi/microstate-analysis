@@ -220,7 +220,7 @@ class MicrostateGPU:
         self.xp = _xp(self.use_gpu)
 
         # keep a NumPy copy for CPU-only operations like find_peaks
-        data_np = _np.asarray(data, dtype=_np.float32)
+        data_np = _np.asarray(data.T, dtype=_np.float32)
         data_np = zero_mean(data_np, 1, _np)  # (T, C)
         self.data = _to_xp(data_np, self.xp)  # GPU
         del data_np
@@ -526,6 +526,10 @@ class MicrostateGPU:
             best_cv = _np.inf
             best = None
             for n_maps in range(min_maps, int(temp_max_maps) + 1):
+                if n_maps == min_maps or n_maps == max_maps or n_maps % 5 == 0:
+                    print(
+                        "[GPU] kmeans_number:{number}/{maxi} will run {runs} times".format(number=n_maps, maxi=temp_max_maps,
+                                                                                     runs=n_runs))
                 cv, gev, maps, label = self.kmeans_modified(
                     data=temp_data, data_std=temp_data_std, n_runs=n_runs,
                     n_maps=int(n_maps), maxerr=maxerr, maxiter=maxiter, polarity=polarity
