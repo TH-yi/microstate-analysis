@@ -1,32 +1,45 @@
 """
 Author: Tianhao Ning
 Description:
-  Individual EEG microstate computation with a single global process pool (pickle-only).
+  Individual EEG microstate computation with a single global process pool (pickle-only),
+  with centralized logging: workers send log events to the main process via a
+  multiprocessing.Queue; the main process drains the queue and writes logs through
+  a single DualHandler. This avoids cross-process file contention and preserves
+  strict log ordering.
 
 Core behavior:
-  1) First, submit the first subject's tasks to fill the pool (up to max_workers).
+  1) Submit the first subject's tasks to fill the pool (up to max_workers).
   2) While running, if the current subject has <=1 not-yet-submitted tasks,
      preload the next subject's data to overlap I/O (but do NOT submit its tasks yet).
-  3) Always prioritize submitting tasks from the current subject. Only when the current
-     subject has no not-yet-submitted tasks, use idle slots for the next preloaded subject.
+  3) Prioritize submitting tasks from the current subject; only use idle slots for
+     preloaded next subjects when current is out of not-yet-submitted tasks.
   4) As soon as a subject finishes (all its tasks complete), save results and evict
      its arrays from memory.
 
 Stability:
-  - Pickle-only transport (no shared memory). This is robust on Windows spawn.
+  - Pickle-only transport (no shared memory). Safe on Windows "spawn".
   - Worker normalizes data to float64, C-contiguous, aligned, writeable,
     and ensures (channels, times) layout before calling algorithms.
-  - Logger rebuilt in worker for clear log attribution.
+
+Centralized logging:
+  - Workers DO NOT write files; they push (level, message) events into a Queue.
+  - Main process runs a background thread to drain the Queue and call DualHandler.
+  - Messages include PID and subject|task for quick attribution.
+  - error_callback is used so worker exceptions are surfaced immediately.
+
+Note:
+  - This file assumes DualHandler has methods: log_info/log_warning/log_error.
 """
 
 import os
 import gc
 import json
 import time
+import threading
 from dataclasses import dataclass
 from collections import OrderedDict, deque, defaultdict
 from multiprocessing import get_context
-from typing import Dict, Deque, Tuple, Optional
+from typing import Dict, Deque, Tuple, Optional, Any
 
 import numpy as np
 
@@ -34,6 +47,53 @@ from microstate_analysis.microstate_pipeline.pipeline_base import PipelineBase
 from microstate_analysis.logger.dualhandler import DualHandler
 from microstate_analysis.microstate_base.microstate_batch_handler import batch_microstate
 from microstate_analysis.microstate_base.data_handler import list_to_matrix
+
+
+# ------------------------- Log event helpers -------------------------
+
+@dataclass(frozen=True)
+class LogEvent:
+    """A simple cross-process log event."""
+    level: str       # 'info' | 'warning' | 'error'
+    message: str     # already formatted line
+
+
+def _emit_log(q: Any, level: str, message: str) -> None:
+    """Send a log event to the main process queue."""
+    try:
+        q.put(LogEvent(level=level, message=message))
+    except Exception:
+        # Last-resort fallback: do nothing to avoid crashing the worker
+        pass
+
+
+def _drain_log_queue(q: Any, logger: DualHandler, stop_sentinel: object) -> None:
+    """
+    Background thread target in the main process:
+    read LogEvent from queue and write via DualHandler until sentinel is received.
+    """
+    while True:
+        try:
+            evt = q.get()
+        except (EOFError, OSError):
+            break  # queue is gone
+        if evt is stop_sentinel:
+            break
+        try:
+            if isinstance(evt, LogEvent):
+                lv = (evt.level or "info").lower()
+                if lv == "error":
+                    logger.log_error(evt.message)
+                elif lv == "warning":
+                    logger.log_warning(evt.message)
+                else:
+                    logger.log_info(evt.message)
+            else:
+                # Unexpected payload; log as info
+                logger.log_info(str(evt))
+        except Exception as e:
+            # Avoid killing the drain thread on log formatting errors
+            logger.log_error(f"[main] Log drain error: {e}")
 
 
 # ------------------------- Worker helpers (pickle-only) -------------------------
@@ -51,11 +111,6 @@ class TaskSpec:
     n_std: int = 3
     n_runs: int = 100
     use_gpu: bool = False
-
-
-def _rebuild_logger(cfg: dict) -> DualHandler:
-    """Rebuild logger in worker processes."""
-    return DualHandler(**cfg)
 
 
 def _ensure_ready_for_algo(arr: np.ndarray) -> np.ndarray:
@@ -84,29 +139,30 @@ def _as_channels_times(x: np.ndarray) -> np.ndarray:
     return x.T if h > w else x
 
 
-def _worker_task(spec: TaskSpec, logger_cfg: dict, data_pickle: Optional[np.ndarray] = None) -> dict:
+def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray], log_queue: Any) -> dict:
     """
     Worker entry (pickle-only): use the pickled ndarray, normalize it, then run batch_microstate.
+    The worker does NOT write files; it pushes log events to the main process.
     """
-    logger = _rebuild_logger(logger_cfg)
+    pid = os.getpid()
+
     try:
         if data_pickle is None:
             raise ValueError("Worker received no data (pickle payload is None).")
-        logger.log_info(
-            f'Start task: {spec.subject}, {spec.task}, '
+
+        _emit_log(
+            log_queue, "info",
+            (f"[pid={pid}] Start task: {spec.subject} | {spec.task} | "
+             f"peaks_only={spec.peaks_only} min_maps={spec.min_maps} max_maps={spec.max_maps} "
+             f"method={spec.method} n_std={spec.n_std} n_runs={spec.n_runs} use_gpu={spec.use_gpu}")
         )
+
         # 1) Normalize memory flags & dtype
         task_data = _ensure_ready_for_algo(data_pickle)
         # 2) Normalize to (channels, times) so Microstate(...).T -> (times, channels)
         task_data = _as_channels_times(task_data)
 
-        # Optional debug (enable if needed)
-        # logger.log_info(
-        #     f"Data ready: shape={task_data.shape}, dtype={task_data.dtype}, "
-        #     f"C={task_data.flags['C_CONTIGUOUS']}, A={task_data.flags['ALIGNED']}, "
-        #     f"W={task_data.flags['WRITEABLE']}, OWN={task_data.flags['OWNDATA']}"
-        # )
-
+        # Prepare parameters for microstate batching
         batch_params = [
             task_data,
             spec.peaks_only,
@@ -120,9 +176,10 @@ def _worker_task(spec: TaskSpec, logger_cfg: dict, data_pickle: Optional[np.ndar
         ]
         task_microstate = batch_microstate(batch_params)
 
-        logger.log_info(
-            f'Finished task: {spec.subject}, {spec.task}, '
-            f'opt_k: {task_microstate.opt_k}, opt_k_index: {int(task_microstate.opt_k_index)}'
+        _emit_log(
+            log_queue, "info",
+            (f"[pid={pid}] Finished task: {spec.subject} | {spec.task} | "
+             f"opt_k={task_microstate.opt_k}, opt_k_index={int(task_microstate.opt_k_index)}")
         )
 
         return {
@@ -137,7 +194,8 @@ def _worker_task(spec: TaskSpec, logger_cfg: dict, data_pickle: Optional[np.ndar
             'max_maps': spec.max_maps,
         }
     except Exception as e:
-        logger.log_error(f'Worker failed ({spec.subject}, {spec.task}): {e}')
+        _emit_log(log_queue, "error", f"[pid={pid}] Worker failed ({spec.subject} | {spec.task}): {e}")
+        # Re-raise to trigger error_callback in the main process
         raise
 
 
@@ -148,7 +206,7 @@ class PipelineIndividualRun(PipelineBase):
                  log_dir=None, prefix=None, suffix=None, cluster_method='kmeans_modified',
                  n_std=3, n_runs=100, use_gpu=False):
         """
-        Pickle-only pipeline.
+        Pickle-only pipeline (Windows-spawn safe) with centralized logging.
         """
         super().__init__()
         self.input_dir = input_dir
@@ -165,7 +223,7 @@ class PipelineIndividualRun(PipelineBase):
         self.n_runs = n_runs
         self.use_gpu = use_gpu
 
-        # Logger (and its config to rebuild inside workers)
+        # Main-process logger (only one writes to files)
         self._logger_cfg = dict(log_dir=log_dir, prefix=prefix or '', suffix=suffix or '')
         self.logger = DualHandler(**self._logger_cfg)
 
@@ -197,21 +255,14 @@ class PipelineIndividualRun(PipelineBase):
                                      max_processes: Optional[int] = None,
                                      prefetch_depth: int = 1) -> None:
         """
-        Run with a single global pool (pickle-only).
-
-        Step 1: Submit the first subject's tasks to fill the pool (up to max_processes).
-        Step 2: While running, when current subject has <=1 not-yet-submitted tasks,
-                preload the next subject's data to overlap I/O (do not submit it yet).
-        Priority: always submit from the current subject first.
-
-        Eviction: when a subject finishes, dump JSON and evict its arrays from memory.
+        Run with a single global pool (pickle-only) and centralized logging.
         """
         cpu = os.cpu_count() or 1
         n_proc = min(max(1, cpu), max_processes or cpu)
-        self.logger.log_info(f"[individual] Using {n_proc} processes")
+        self.logger.log_info(f"[main] Using {n_proc} processes")
 
         if not self.subjects:
-            self.logger.log_warning("No subjects provided. Nothing to do.")
+            self.logger.log_warning("[main] No subjects provided. Nothing to do.")
             return
 
         # Per-subject bookkeeping
@@ -225,20 +276,42 @@ class PipelineIndividualRun(PipelineBase):
         preloaded_flags: Dict[str, bool] = defaultdict(bool)
 
         # Active async results: key=(subject, task) -> AsyncResult
-        inflight: Dict[Tuple[str, str], any] = {}
+        inflight: Dict[Tuple[str, str], Any] = {}
 
         ctx = get_context("spawn")
+        log_queue = ctx.Queue()  # cross-process log queue
+        STOP = object()          # sentinel for draining thread
+
+        # Start the centralized log drain thread
+        log_thread = threading.Thread(
+            target=_drain_log_queue, args=(log_queue, self.logger, STOP), daemon=True
+        )
+        log_thread.start()
+
+        def on_error(exc: BaseException, subject: str, task: str):
+            # Immediate visibility on worker exceptions
+            self.logger.log_error(f"[main] Worker error on {subject} | {task}: {exc}")
+
         with ctx.Pool(processes=n_proc) as pool:
 
             def submit_task(subject: str, task: str):
-                """Submit one (subject, task) to the pool using pickle (robust)."""
+                """
+                Submit one (subject, task) to the pool using pickle (robust).
+                Also write a 'Submit task -> ...' line in the MAIN process log to ensure
+                a visible starting point in case a worker crashes before 'Start'.
+                """
+                self.logger.log_info(f"[main] Submit task -> {subject} | {task}")
                 arr = data_cache[subject][task]  # float64, contiguous
                 spec = TaskSpec(
                     subject=subject, task=task,
                     peaks_only=self.peaks_only, min_maps=self.min_maps, max_maps=self.max_maps,
                     method=self.cluster_method, n_std=self.n_std, n_runs=self.n_runs, use_gpu=self.use_gpu
                 )
-                ar = pool.apply_async(_worker_task, (spec, self._logger_cfg, arr))
+                ar = pool.apply_async(
+                    _worker_task,
+                    (spec, arr, log_queue),
+                    error_callback=lambda e, s=subject, t=task: on_error(e, s, t)
+                )
                 inflight[(subject, task)] = ar
 
             # ------------------ Phase 1: submit first batch from the first subject ------------------
@@ -247,7 +320,7 @@ class PipelineIndividualRun(PipelineBase):
 
             # Load the very first subject
             data_cache[current_subject] = self._load_subject_data(current_subject)
-            self.logger.log_info(f"Preloaded subject: {current_subject}")
+            self.logger.log_info(f"[main] Preloaded subject: {current_subject}")
 
             # Fill the pool with tasks from the first subject only
             while len(inflight) < n_proc and pending_submit[current_subject]:
@@ -268,18 +341,16 @@ class PipelineIndividualRun(PipelineBase):
                                 try:
                                     data_cache[nxt] = self._load_subject_data(nxt)
                                     preloaded_flags[nxt] = True
-                                    self.logger.log_info(f"Preloaded subject: {nxt}")
+                                    self.logger.log_info(f"[main] Preloaded subject: {nxt}")
                                 except Exception as e:
-                                    self.logger.log_warning(f"Prefetch failed for {nxt}: {e}")
+                                    self.logger.log_warning(f"[main] Prefetch failed for {nxt}: {e}")
 
-                # (B) Submit: prioritize current subject; if it has no not-yet-submitted tasks,
-                #     and there are idle slots, try the next preloaded subject.
+                # (B) Submit: prioritize current subject; if none, use idle slots for next preloaded subjects
                 while len(inflight) < n_proc:
                     if pending_submit[current_subject]:
                         task = pending_submit[current_subject].popleft()
                         submit_task(current_subject, task)
                     else:
-                        # Current subject has no more tasks to submit; use idle slots for next preloaded subjects
                         advanced = False
                         for nxt_idx in range(current_index + 1, len(self.subjects)):
                             nxt = self.subjects[nxt_idx]
@@ -318,7 +389,7 @@ class PipelineIndividualRun(PipelineBase):
                     if pending_count[subj] == 0:
                         # Persist & evict
                         self.dump_to_json(results_per_subject[subj], self.output_dir, f'{subj}_individual_maps.json')
-                        self.logger.log_info(f'Finished subject: {subj} (evicting from memory)')
+                        self.logger.log_info(f"[main] Finished subject: {subj} (evicting from memory)")
                         results_per_subject[subj] = None  # free references
 
                         # Evict data cache
@@ -337,16 +408,23 @@ class PipelineIndividualRun(PipelineBase):
                                 current_index = next_cur
                                 current_subject = self.subjects[current_index]
 
-                # (D) Small cooperative sleep to avoid busy spinning when pool is full and nothing completed
+                # (D) Small cooperative sleep to avoid busy spinning
                 if not completed and len(inflight) >= n_proc:
                     time.sleep(0.01)
 
             # End while: all tasks done; pool closed/joined by context manager
 
+        # Stop the centralized log drain thread
+        try:
+            log_queue.put(STOP)
+        except Exception:
+            pass
+        log_thread.join(timeout=5)
+
         # (E) Save task-wise map counts if requested
         if save_task_map_counts:
             if not task_map_counts_output_dir or not task_map_counts_output_filename:
-                self.logger.log_error("Missing parameters for saving task map counts!")
+                self.logger.log_error("[main] Missing parameters for saving task map counts!")
                 raise ValueError("task_map_counts_output_dir and task_map_counts_output_filename are required.")
             task_wise_map_counts = [
                 {"subject": s, "opt_k": optk_per_subject[s]} for s in self.subjects
@@ -357,7 +435,8 @@ class PipelineIndividualRun(PipelineBase):
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        state['logger'] = None  # DualHandler is not picklable; rebuild in worker if needed
+        # DualHandler is not picklable; store its config and rebuild on restore
+        state['logger'] = None
         return state
 
     def __setstate__(self, state):
@@ -388,10 +467,10 @@ if __name__ == '__main__':
     # Optional parameters
     individual_log_dir = '../../../storage/log/individual_run'
     individual_log_prefix = 'individual_run'
-    individual_log_suffix = ''
+    individual_log_suffix = ''  # centralized logger only, worker logs go through queue
     task_map_counts_output_dir = '../../../storage/microstate_output/individual_run'
     task_map_counts_output_filename = 'individual_map_counts'
-    max_processes = 4
+    max_processes = 8
     cluster_method = 'kmeans_modified'
     n_std = 3
     n_runs = 100
