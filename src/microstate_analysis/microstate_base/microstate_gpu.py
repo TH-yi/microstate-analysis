@@ -334,7 +334,7 @@ class MicrostateGPU:
                 # --- update step ---
                 for k in range(n_maps):
                     data_k = data[label == k, :]
-                    maps[k, :] = MicrostateGPU.max_evec(data_k, 0)
+                    maps[k, :] = MicrostateGPU.max_evec(data_k, xp, 0)
 
                 var1 = var0
                 var0 = MicrostateGPU.orthogonal_dist(data, maps[label, :], xp) / (n_gfp * (self.n_ch - 1))
