@@ -52,37 +52,41 @@ from microstate_analysis.logger.dualhandler import DualHandler
 from microstate_analysis.microstate_base.microstate_batch_handler import batch_microstate
 from microstate_analysis.microstate_base.data_handler import list_to_matrix
 
-_GPU_SEM: Any = None        # multiprocessing.Manager().Semaphore(1)
-_GPU_WAIT_Q: Any = None     # multiprocessing.Manager().Queue(maxsize=1)
+# GPU gating primitives (shared via Manager)
+_GPU_SEM: Any = None  # parallel slots, e.g., 2
+_GPU_WAIT_Q: Any = None  # waiting queue with capacity = total_slots - parallel_slots
+_GPU_WAITERS: Any = None  # mgr.Value('i', count of waiters)
 _GPU_THRESHOLD: int = 80_000
+_GPU_WAIT_TIMEOUT_S: Optional[float] = None  # None => wait forever
 
 # Module-level queue holder set by pool initializer (spawn-safe)
 _LOG_QUEUE: Any = None
+
 
 # ------------------------- Log event helpers -------------------------
 
 @dataclass(frozen=True)
 class LogEvent:
     """A simple cross-process log event."""
-    level: str       # 'info' | 'warning' | 'error'
-    message: str     # already formatted line
+    level: str  # 'info' | 'warning' | 'error'
+    message: str  # already formatted line
 
 
-
-def _pool_initializer(log_queue: Any,
-                      gpu_sem: Any = None,
-                      gpu_wait_q: Any = None,
-                      gpu_threshold: int = 80_000) -> None:
-    """
-    Called once per worker process just after it starts.
-    Stores the shared log queue and (optionally) the GPU gating primitives.
-    """
-    global _LOG_QUEUE, _GPU_SEM, _GPU_WAIT_Q, _GPU_THRESHOLD
+def _pool_initializer(
+        log_queue: Any,
+        gpu_sem: Any = None,
+        gpu_wait_q: Any = None,
+        gpu_threshold: int = 80_000,
+        gpu_wait_timeout_s: Optional[float] = None,
+        gpu_waiters: Any = None
+) -> None:
+    global _LOG_QUEUE, _GPU_SEM, _GPU_WAIT_Q, _GPU_THRESHOLD, _GPU_WAIT_TIMEOUT_S, _GPU_WAITERS
     _LOG_QUEUE = log_queue
     _GPU_SEM = gpu_sem
     _GPU_WAIT_Q = gpu_wait_q
     _GPU_THRESHOLD = int(gpu_threshold)
-
+    _GPU_WAIT_TIMEOUT_S = gpu_wait_timeout_s
+    _GPU_WAITERS = gpu_waiters
 
 
 def _emit_log(level: str, message: str) -> None:
@@ -152,10 +156,10 @@ def _ensure_ready_for_algo(arr: np.ndarray) -> np.ndarray:
     """
     x = np.asarray(arr)
     need_copy = (
-        x.dtype != np.float64
-        or not x.flags['C_CONTIGUOUS']
-        or not x.flags['ALIGNED']
-        or not x.flags['WRITEABLE']
+            x.dtype != np.float64
+            or not x.flags['C_CONTIGUOUS']
+            or not x.flags['ALIGNED']
+            or not x.flags['WRITEABLE']
     )
     return np.array(x, dtype=np.float64, order='C', copy=True) if need_copy else x
 
@@ -194,55 +198,165 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray]) -> dict:
         # 2) Normalize to (channels, times) so Microstate(...).T -> (times, channels)
         task_data = _as_channels_times(task_data)
 
-        # Decide whether to use GPU for THIS task under gating policy
+        # ---------- Decide GPU vs CPU with logging ----------
         use_gpu_for_this_task = False
         acquired_sem = False
         took_wait_slot = False
+        inc_waiters = False
+        reason_parts = []
 
-        if spec.use_gpu and (_GPU_SEM is not None):
-            n_points = int(task_data.shape[1])  # (channels, times) -> times as "points"
+        # Basic metrics for the decision
+        n_channels, n_points = int(task_data.shape[0]), int(task_data.shape[1])
+        is_big = (n_points >= int(_GPU_THRESHOLD)) if _GPU_THRESHOLD is not None else False
 
-            # Try immediate GPU if free
+        # Whether GPU gating is available at all
+        gpu_gating_ready = (spec.use_gpu and (_GPU_SEM is not None))
+        if not spec.use_gpu:
+            reason_parts.append("GPU disabled by spec.use_gpu=False")
+        elif _GPU_SEM is None:
+            reason_parts.append("GPU gating primitives not initialized")
+
+        waiters_present = False
+        if gpu_gating_ready:
             try:
-                acquired_sem = _GPU_SEM.acquire(blocking=False)
-                _emit_log("Info", (f"Successfully acquire gpu sem: {acquired_sem}"))
-            except Exception as e:
-                _emit_log("Warning", (f"acquire gpu sem failed: {e}"))
-                acquired_sem = False
+                waiters_present = (_GPU_WAITERS is not None and int(_GPU_WAITERS.value) > 0)
+            except Exception:
+                waiters_present = False
 
-            if acquired_sem:
-                _emit_log("info", "GPU free, assign to GPU")
-                use_gpu_for_this_task = True
+        if gpu_gating_ready:
+            if not waiters_present:
+                # Try immediate GPU (no waiters → allow fast-path)
+                try:
+                    acquired_sem = _GPU_SEM.acquire(block=False)
+                except Exception:
+                    acquired_sem = False
+
+                if acquired_sem:
+                    use_gpu_for_this_task = True
+                    reason_parts.append("GPU: immediate token acquired (no waiters)")
+                else:
+                    # GPU busy: only BIG tasks may queue (capacity enforced by maxsize)
+                    if is_big and (_GPU_WAIT_Q is not None):
+                        try:
+                            _GPU_WAIT_Q.put_nowait(1)
+                            took_wait_slot = True
+                            if _GPU_WAITERS is not None:
+                                _GPU_WAITERS.value += 1
+                                inc_waiters = True
+                            reason_parts.append(
+                                f"GPU busy → queued big task (points={n_points} ≥ threshold={_GPU_THRESHOLD})")
+                        except Exception as e:
+                            _emit_log("warning", f"Error check GPU wait queue: {e}")
+                            took_wait_slot = False
+                            reason_parts.append("GPU busy and waiting queue full → CPU fallback")
+
+                        if took_wait_slot:
+                            t0 = time.monotonic()
+                            try:
+                                if _GPU_WAIT_TIMEOUT_S is None:
+                                    acquired_sem = _GPU_SEM.acquire()  # block forever
+                                else:
+                                    acquired_sem = _GPU_SEM.acquire(timeout=float(_GPU_WAIT_TIMEOUT_S))
+                            except Exception:
+                                acquired_sem = False
+
+                            waited = time.monotonic() - t0
+                            if acquired_sem:
+                                if took_wait_slot:
+                                    try:
+                                        _GPU_WAIT_Q.get_nowait()  # free waiting slot immediately
+                                    except Exception:
+                                        pass
+                                    if inc_waiters and (_GPU_WAITERS is not None):
+                                        try:
+                                            _GPU_WAITERS.value -= 1
+                                        except Exception:
+                                            pass
+                                    took_wait_slot = False
+                                    inc_waiters = False
+                                    reason_parts.append("dequeued from waiting queue (slot released upon token)")
+
+                                use_gpu_for_this_task = True
+                                reason_parts.append(f"GPU: token acquired after waiting {waited:.3f}s")
+                            else:
+                                # Only possible if you configured a finite timeout
+                                reason_parts.append(f"Timeout after {waited:.3f}s → CPU fallback")
+                                try:
+                                    _GPU_WAIT_Q.get_nowait()
+                                except Exception:
+                                    pass
+                                took_wait_slot = False
+                                if inc_waiters and (_GPU_WAITERS is not None):
+                                    _GPU_WAITERS.value -= 1
+                                    inc_waiters = False
+                    else:
+                        if not is_big:
+                            reason_parts.append(
+                                f"GPU busy and task small (points={n_points} < threshold={_GPU_THRESHOLD}) → CPU fallback")
+                        else:
+                            reason_parts.append("GPU busy; no waiting queue available → CPU fallback")
             else:
-                # GPU busy: only let "big" tasks queue up, and allow at most ONE waiting slot.
-                is_big = (n_points >= int(_GPU_THRESHOLD))
+                # There is a waiter → forbid newcomers from immediate grab (fairness)
+                reason_parts.append("Waiter present → forbid immediate GPU grab for newcomers")
                 if is_big and (_GPU_WAIT_Q is not None):
                     try:
-                        _GPU_WAIT_Q.put_nowait(1)  # reserve the single waiting slot
-                        _emit_log("info", f"GPU busy, queue big task (points={n_points})")
+                        _GPU_WAIT_Q.put_nowait(1)
                         took_wait_slot = True
+                        if _GPU_WAITERS is not None:
+                            _GPU_WAITERS.value += 1
+                            inc_waiters = True
+                        reason_parts.append(
+                            f"Joined waiting queue as big task (points={n_points} ≥ threshold={_GPU_THRESHOLD})")
                     except Exception:
                         took_wait_slot = False
+                        reason_parts.append("Waiting queue full while waiter present → CPU fallback")
 
                     if took_wait_slot:
-                        # Block with a timeout so the waiting slot won't leak forever
+                        t0 = time.monotonic()
                         try:
-                            acquired_sem = _GPU_SEM.acquire(timeout=None) # implement timeout if you want
+                            if _GPU_WAIT_TIMEOUT_S is None:
+                                acquired_sem = _GPU_SEM.acquire()
+                            else:
+                                acquired_sem = _GPU_SEM.acquire(timeout=float(_GPU_WAIT_TIMEOUT_S))
                         except Exception:
                             acquired_sem = False
 
+                        waited = time.monotonic() - t0
                         if acquired_sem:
+                            if took_wait_slot:
+                                try:
+                                    _GPU_WAIT_Q.get_nowait()  # free waiting slot immediately
+                                except Exception:
+                                    pass
+                                if inc_waiters and (_GPU_WAITERS is not None):
+                                    try:
+                                        _GPU_WAITERS.value -= 1
+                                    except Exception:
+                                        pass
+                                took_wait_slot = False
+                                inc_waiters = False
+                                reason_parts.append("dequeued from waiting queue (slot released upon token)")
                             use_gpu_for_this_task = True
+                            reason_parts.append(f"GPU: token acquired after waiting {waited:.3f}s")
                         else:
-                            # timeout -> drop waiting slot and fall back to CPU
+                            reason_parts.append(f"Timeout after {waited:.3f}s → CPU fallback")
                             try:
                                 _GPU_WAIT_Q.get_nowait()
                             except Exception:
                                 pass
                             took_wait_slot = False
+                            if inc_waiters and (_GPU_WAITERS is not None):
+                                _GPU_WAITERS.value -= 1
+                                inc_waiters = False
                 else:
-                    _emit_log("info", f"GPU busy, not assigning to GPU (points={n_points})")
+                    reason_parts.append(
+                        f"Small task while waiter present (points={n_points} < threshold={_GPU_THRESHOLD}) → CPU fallback")
 
+        device = "GPU" if use_gpu_for_this_task else "CPU"
+        _emit_log("info",
+                  (f"[pid={pid}] Dispatch to {device} | subject={spec.subject} | task={spec.task} | "
+                   f"points={n_points} | threshold={_GPU_THRESHOLD} | waiters={'yes' if waiters_present else 'no'} | "
+                   f"reasons: " + " ; ".join(reason_parts)))
 
         # Prepare parameters for microstate batching
         batch_params = [
@@ -250,15 +364,47 @@ def _worker_task(spec: TaskSpec, data_pickle: Optional[np.ndarray]) -> dict:
             spec.peaks_only,
             spec.min_maps,
             spec.max_maps,
-            None,               # placeholder for prior maps if any
+            None,  # placeholder for prior maps if any
             spec.method,
             spec.n_std,
             spec.n_runs,
             bool(use_gpu_for_this_task),
         ]
-        task_microstate = batch_microstate(batch_params)
 
-        # Safe int conversion for opt_k_index (can be None in rare cases)
+        try:
+            task_microstate = batch_microstate(batch_params)
+        finally:
+            # Always release gating primitives if we used/queued GPU, and do hygiene logging
+            if acquired_sem:
+                try:
+                    _GPU_SEM.release()
+                    _emit_log("info", f"[pid={pid}] GPU token released | subject={spec.subject} | task={spec.task}")
+                except Exception:
+                    pass
+            if took_wait_slot:
+                try:
+                    _GPU_WAIT_Q.get_nowait()
+                    _emit_log("info",
+                              f"[pid={pid}] GPU waiting-slot cleared | subject={spec.subject} | task={spec.task}")
+                except Exception:
+                    pass
+            if inc_waiters and (_GPU_WAITERS is not None):
+                try:
+                    _GPU_WAITERS.value -= 1
+                except Exception:
+                    pass
+            if use_gpu_for_this_task:
+                # Optional: extra GPU memory hygiene per task
+                try:
+                    import cupy as cp
+                    cp.cuda.Stream.null.synchronize()
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                    _emit_log("info", f"[pid={pid}] GPU memory pools freed | subject={spec.subject} | task={spec.task}")
+                except Exception:
+                    pass
+
+            # Safe int conversion for opt_k_index (can be None in rare cases)
         oki = task_microstate.opt_k_index
         oki_sanitized = -1 if oki is None else int(oki)
 
@@ -348,9 +494,7 @@ class PipelineIndividualRun(PipelineBase):
             and optionally evict its input arrays from memory (data_cache).
           - Completion (dump/evict results) remains per-subject when all tasks finish.
         """
-        cpu = os.cpu_count() or 1
-        n_proc = min(max(1, cpu), max_processes or cpu)
-        self.logger.log_info(f"[main] Using {n_proc} processes")
+        self.logger.log_info(f"[main] Using {max_processes} processes")
 
         if not self.subjects:
             self.logger.log_warning("[main] No subjects provided. Nothing to do.")
@@ -379,29 +523,48 @@ class PipelineIndividualRun(PipelineBase):
 
         ctx = get_context("spawn")
         log_queue = ctx.Queue()  # cross-process log queue
-        STOP = object()          # sentinel for draining thread
+        STOP = object()  # sentinel for draining thread
 
         # Start the centralized log drain thread
         log_thread = threading.Thread(
             target=_drain_log_queue, args=(log_queue, self.logger, STOP), daemon=True
         )
         log_thread.start()
-        # create shared GPU gating primitives when GPU is enabled
+        # ---- GPU gating config (tunable) ----
+        parallel_slots = 6  # GPU parallel running
+        total_slots = 7  # GPU parallel running + waiting
+        waiting_capacity = max(total_slots - parallel_slots, 0)  # = 1
+        gpu_threshold = 50000
+
+        gpu_wait_timeout_s = None
+
         gpu_sem = None
         gpu_wait_q = None
+        gpu_waiters = None
+        mgr = None
+
         if self.use_gpu:
-            mgr = ctx.Manager()  # SyncManager (non-daemon server proc)
-            gpu_sem = mgr.Semaphore(1)  # only one concurrent GPU user
-            gpu_wait_q = mgr.Queue(maxsize=1)  # allow at most one "waiting" big task
-            gpu_threshold = 80_000  # points threshold (timepoints)
+            mgr = ctx.Manager()
+            gpu_sem = mgr.Semaphore(parallel_slots)
+            gpu_wait_q = mgr.Queue(maxsize=waiting_capacity)
+            gpu_waiters = mgr.Value('i', 0)
+            self.logger.log_info(
+                f"[main] GPU gating: parallel={parallel_slots}, "
+                f"wait_capacity={waiting_capacity}, threshold={gpu_threshold}, "
+                f"timeout={'∞' if gpu_wait_timeout_s is None else gpu_wait_timeout_s}s"
+            )
         else:
             gpu_threshold = 0
+
         def on_error(exc: BaseException, subject: str, task: str):
             # Immediate visibility on worker exceptions
             self.logger.log_error(f"[main] Worker error on {subject} | {task}: {exc}")
 
-        with ctx.Pool(processes=n_proc, initializer=_pool_initializer,
-                      initargs=(log_queue,gpu_sem, gpu_wait_q, gpu_threshold)) as pool:
+        with ctx.Pool(
+                processes=max_processes,
+                initializer=_pool_initializer,
+                initargs=(log_queue, gpu_sem, gpu_wait_q, gpu_threshold, gpu_wait_timeout_s, gpu_waiters)
+        ) as pool:
 
             def submit_task(subject: str, task: str):
                 """
@@ -430,7 +593,7 @@ class PipelineIndividualRun(PipelineBase):
             self.logger.log_info(f"[main] Preloaded subject (submit leader): {current_submit_subject}")
 
             # Fill the pool with tasks from the submission leader only
-            while len(inflight) < n_proc and pending_submit[current_submit_subject]:
+            while len(inflight) < max_processes and pending_submit[current_submit_subject]:
                 task = pending_submit[current_submit_subject].popleft()
                 submit_task(current_submit_subject, task)
 
@@ -479,12 +642,14 @@ class PipelineIndividualRun(PipelineBase):
                             try:
                                 data_cache[current_submit_subject] = self._load_subject_data(current_submit_subject)
                                 preloaded_flags[current_submit_subject] = True
-                                self.logger.log_info(f"[main] Preloaded subject (submit leader): {current_submit_subject}")
+                                self.logger.log_info(
+                                    f"[main] Preloaded subject (submit leader): {current_submit_subject}")
                             except Exception as e:
-                                self.logger.log_warning(f"[main] On-lead prefetch failed for {current_submit_subject}: {e}")
+                                self.logger.log_warning(
+                                    f"[main] On-lead prefetch failed for {current_submit_subject}: {e}")
 
                 # (B1) SUBMIT: prioritize submission leader; if none, use idle slots for preloaded next subjects.
-                while len(inflight) < n_proc:
+                while len(inflight) < max_processes:
                     if pending_submit[current_submit_subject]:
                         task = pending_submit[current_submit_subject].popleft()
                         submit_task(current_submit_subject, task)
@@ -619,9 +784,9 @@ if __name__ == '__main__':
     individual_log_suffix = ''  # centralized logger only, worker logs go through queue
     task_map_counts_output_dir = '../../../storage/microstate_output/individual_run'
     task_map_counts_output_filename = 'individual_map_counts'
-    max_processes = 20
+    max_processes = 30
     cluster_method = 'kmeans_modified'
-    n_std = 3
+    n_std = 33
     n_runs = 100
     use_gpu = True
 
