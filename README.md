@@ -21,6 +21,13 @@ A production-ready **EEG microstate analysis** toolkit packaged as a Python libr
   `--use-gpu` flag in CLI. When enabled (and CuPy is available), heavy linear algebra
   (distance, correlation, eigen-decomposition) runs on GPU for significant speedups.
   Falls back gracefully to CPU if unavailable.
+
+### Montage (cap63.locs)
+- By default, plotting uses the **built-in** `cap63.locs` montage bundled in the package.
+- You can override it via:
+  - CLI: `--montage-path /path/to/custom.locs`, or
+  - Environment variable: `MICROSTATE_LOCS=/path/to/custom.locs`
+- Internally, the package resolves the built-in resource using `importlib.resources`, so it also works when installed as a wheel/zip.
 ---
 
 ## Installation
@@ -177,6 +184,47 @@ microstate-analysis microstate-pipeline across-conditions --input-dir storage/mi
 
 ### 5) `plot across-subjects`
 
+#### Plot options explained
+- `--montage-path`: Path to a custom `.locs` file. If omitted, the **built-in** `cap63.locs` is used.
+- `--sfreq`: Sampling frequency used when constructing the MNE `Info` (default: `500`).
+- `--channel-types`: Channel types for MNE (`eeg` by default). Keep as `eeg` unless you know you need something else.
+- `--on-missing`: What to do if your `.locs` file lacks some channel positions: `raise` (default), `warn`, or `ignore`.
+- `--channel-names`: Override channel names entirely. **If omitted, the default 63-channel cap order is used.**
+
+#### Example: custom channel names
+Python API example (recommended when overriding all names):
+
+```python
+ch = ['Fp1', 'Fz', 'F3', 'F7', 'FT9', 'FC5', 'FC1', 'C3', 'T7', 'TP9', 'CP5', 'CP1', 'Pz', 'P3', 'P7', 'O1', 'Oz',
+          'O2', 'P4', 'P8', 'TP10', 'CP6', 'CP2', 'C4', 'T8', 'FT10', 'FC6', 'FC2', 'F4', 'F8', 'Fp2', 'AF7', 'AF3',
+          'AFz', 'F1', 'F5', 'FT7', 'FC3', 'FCz', 'C1', 'C5', 'TP7', 'CP3', 'P1', 'P5', 'PO7', 'PO3', 'POz', 'PO4',
+          'PO8', 'P6', 'P2', 'CPz', 'CP4', 'TP8', 'C6', 'C2', 'FC4', 'FT8', 'F6', 'F2', 'AF4', 'AF8']
+job = PlotAcrossSubjectsOutput(
+    input_json_path="in.json",
+    output_img_dir="./plots",
+    reordered_json_path="reordered.json",
+    conditions=["idea_generation","idea_evolution","idea_rating","rest"],
+    custom_channel_names=ch,                 # <- use your custom names
+    custom_montage_path=None,                # omit to use built-in cap63.locs
+    sampling_frequency=500,
+    channel_types="eeg",
+    missing_channel_behavior="raise",
+)
+job.plot_and_reorder()
+```
+
+CLI can also accept multiple `--channel-names` flags (one per name), e.g.:
+
+```bash
+microstate plot across-subjects \
+  --input-json-path in.json \
+  --output-img-dir ./plots \
+  --reordered-json-path reordered.json \
+  --channel-names Fp1 --channel-names Fz --channel-names F3  # ... repeat for all names
+```
+_Tip: For full 63-name sets, prefer the Python API (cleaner). If you really need CLI-only, script the flag expansion._
+
+
 Plot a grid from `across_subjects.json`, compute an ordering, reorder maps, and save a reordered JSON.
 
 **Key options**
@@ -199,6 +247,14 @@ microstate-analysis plot across-subjects --input-json-path storage/microstate_ou
 ---
 
 ### 6) `plot across-conditions`
+
+#### Plot options explained
+- `--montage-path`: Path to a custom `.locs` file. If omitted, the **built-in** `cap63.locs` is used.
+- `--sfreq`: Sampling frequency used when constructing the MNE `Info` (default: `500`).
+- `--channel-types`: Channel types for MNE (`eeg` by default). Keep as `eeg` unless you know you need something else.
+- `--on-missing`: What to do if your `.locs` file lacks some channel positions: `raise` (default), `warn`, or `ignore`.
+- `--channel-names`: Override channel names entirely. **If omitted, the default 63-channel cap order is used.**
+
 
 Plot a grid from `across_conditions.json`, compute an ordering, reorder maps, and save a reordered JSON.
 
@@ -318,3 +374,31 @@ ret = proc.wait()
 
 MIT
 
+
+#### Plotting parameters explained
+- `--montage-path`: Use a custom `.locs` file instead of the built-in `cap63.locs`.
+- `--sfreq`: Sampling frequency (Hz). Needed if you want to map samples to real time.
+- `--channel-types`: Channel type string passed to MNE (usually `'eeg'`).
+- `--on-missing`: Behavior if montage has missing channels: `raise`, `warn`, or `ignore`.
+- `--channel-names`: Optional explicit channel name list to override the default 63-channel set.
+
+
+**Parameter notes:**
+- `--montage-path`: If omitted, the built-in `cap63.locs` is used. Provide a `.locs` file path to override.
+- `--sfreq`: EEG sampling frequency (Hz). Affects duration/transition metrics.
+- `--channel-types`: Channel modality, e.g., `eeg`, `meg`, etc. Default is `eeg`.
+- `--on-missing`: Behavior when some channels in montage are missing: `raise`, `warn`, or `ignore`.
+- `--channel-names`: Explicit channel list. If provided, overrides default 63-channel cap. Must match data order.
+
+**Example with custom channel names:**
+```bash
+ch='["Fp1", "Fz", "F3", "F7", "FT9", "FC5", "FC1", "C3", "T7", "TP9", "CP5", "CP1", "Pz", "P3", "P7", "O1", "Oz", \
+    "O2", "P4", "P8", "TP10", "CP6", "CP2", "C4", "T8", "FT10", "FC6", "FC2", "F4", "F8", "Fp2", "AF7", "AF3", \
+    "AFz", "F1", "F5", "FT7", "FC3", "FCz", "C1", "C5", "TP7", "CP3", "P1", "P5", "PO7", "PO3", "POz", "PO4", \
+    "PO8", "P6", "P2", "CPz", "CP4", "TP8", "C6", "C2", "FC4", "FT8", "F6", "F2", "AF4", "AF8"]'
+microstate-analysis plot across-subjects \
+    --input-json-path results.json \
+    --output-img-dir figs/ \
+    --reordered-json-path reordered.json \
+    --channel-names $ch
+```

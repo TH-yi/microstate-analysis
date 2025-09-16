@@ -25,7 +25,7 @@ state = GlobalState()
 
 def version_callback(value: bool):
     if value:
-        print("microstate_analysis 0.1.0")
+        print("microstate_analysis 0.2.0")
         raise typer.Exit()
 
 
@@ -219,6 +219,14 @@ def cli_plot_across_subjects(
         log_dir: Optional[str] = typer.Option(None),
         log_prefix: str = typer.Option("plot_across_subjects"),
         log_suffix: str = typer.Option(""),
+        montage_path: Optional[str] = typer.Option(
+            None, help="Path to a custom .locs montage. If omitted, built-in cap63.locs is used."
+        ),
+        sfreq: int = typer.Option(500, help="Sampling frequency for MNE Info (default 500)."),
+        channel_types: str = typer.Option("eeg", help="Channel types for MNE Info (default 'eeg')."),
+        on_missing: str = typer.Option("raise", help="Montage behavior: 'raise'|'warn'|'ignore'."),
+        channel_names: Optional[List[str]] = typer.Option(None, help="Optional explicit channel names."),
+
 ):
     try:
         job = PlotAcrossSubjectsOutput(
@@ -230,6 +238,11 @@ def cli_plot_across_subjects(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            custom_montage_path = montage_path,
+            sampling_frequency = sfreq,
+            channel_types = channel_types,
+            missing_channel_behavior = on_missing,
+            custom_channel_names = channel_names,
         )
         job.logger.log_info("[CLI] plot across-subjects started")
         job.plot_and_reorder()
@@ -248,6 +261,14 @@ def cli_plot_across_conditions(
         log_dir: Optional[str] = typer.Option(None),
         log_prefix: str = typer.Option("plot_across_conditions"),
         log_suffix: str = typer.Option(""),
+        montage_path: Optional[str] = typer.Option(
+           None, help="Path to a custom .locs montage. If omitted, built-in cap63.locs is used."
+        ),
+        sfreq: int = typer.Option(500, help="Sampling frequency for MNE Info (default 500)."),
+        channel_types: str = typer.Option("eeg", help="Channel types for MNE Info (default 'eeg')."),
+        on_missing: str = typer.Option("raise", help="Montage behavior: 'raise'|'warn'|'ignore'."),
+        channel_names: Optional[List[str]] = typer.Option(None, help="Optional explicit channel names."),
+
 ):
     try:
         job = PlotAcrossConditionsOutput(
@@ -259,6 +280,11 @@ def cli_plot_across_conditions(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            custom_montage_path = montage_path,
+            sampling_frequency = sfreq,
+            channel_types = channel_types,
+            missing_channel_behavior = on_missing,
+            custom_channel_names = channel_names,
         )
         job.logger.log_info("[CLI] plot across-conditions started")
         job.plot_and_reorder()

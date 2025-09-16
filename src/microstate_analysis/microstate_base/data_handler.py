@@ -102,7 +102,7 @@ def create_info(
     if locs_file is None or not Path(locs_file).exists():
         tried = [
             str(locs_path) if locs_path else None,
-            os.environ.get("MICROSTATE_CAP63_LOCS"),
+            os.environ.get("MICROSTATE_LOCS"),
             f"package resource {_RESOURCE_PACKAGE}/{_RESOURCE_NAME}",
             "module-relative fallback ./eeg_tool/cap63.locs",
         ]
