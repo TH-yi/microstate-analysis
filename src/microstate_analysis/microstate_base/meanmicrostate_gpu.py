@@ -204,5 +204,21 @@ class MeanMicrostateGPU:
                 best_ms, best_ss = mean_sim, std_sim
                 best_label = [ _to_numpy(x) for x in labels ]
                 best_mean  = _to_numpy(mean_maps)
+        maps_py = [self._to_list(map) for map in best_mean]
+        labels_py = [self._to_list(lbl) for lbl in best_label]
+        return maps_py, labels_py, float(best_ms), float(best_ss)
 
-        return best_mean, best_label, float(best_ms), float(best_ss)
+    @staticmethod
+    def _to_list(x):
+        """Prefer list-like conversion for arrays, otherwise return as-is."""
+        try:
+            import cupy as cp
+            if isinstance(x, cp.ndarray):
+                x = cp.asnumpy(x)
+        except Exception:
+            pass
+        try:
+            import numpy as np
+            return x.tolist() if isinstance(x, np.ndarray) else x
+        except Exception:
+            return x

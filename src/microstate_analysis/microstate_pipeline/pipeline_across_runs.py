@@ -67,15 +67,6 @@ class PipelineAcrossRuns(PipelineBase):
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
         self.logger = DualHandler(**self._logger_cfg)
 
-    # -------------- helpers --------------
-
-    def dump_to_json(self, data_obj, out_dir: str, filename_wo_ext: str):
-        """Save dict/list as pretty JSON under out_dir/filename_wo_ext.json"""
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, f"{filename_wo_ext}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data_obj, f, ensure_ascii=False, indent=4)
-        self.logger.log_info(f"Saved JSON: {path}")
 
     # -------------- pickling-safe logger --------------
 
@@ -113,7 +104,7 @@ class PipelineAcrossRuns(PipelineBase):
             # batch_mean_microstate expects: [maps, n_k, n_ch, n_runs]
             agg = batch_mean_microstate([maps, self.n_k, self.n_ch, len(task_list), self.use_gpu])
             res[cond] = {
-                "maps": agg["maps"].tolist(),
+                "maps": agg["maps"],
                 "label": agg["label"],
                 "mean_similarity": agg["mean_similarity"],
                 "std_similarity": agg["std_similarity"],
@@ -180,7 +171,7 @@ if __name__ == "__main__":
 
     # Multiprocessing cap (None = up to CPU count)
     max_processes = None
-
+    
     # Use gpu (cupy)
     use_gpu = True
 

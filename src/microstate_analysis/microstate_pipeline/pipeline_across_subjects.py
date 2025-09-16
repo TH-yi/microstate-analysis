@@ -61,14 +61,6 @@ class PipelineAcrossSubjects(PipelineBase):
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
         self.logger = DualHandler(**self._logger_cfg)
 
-    # ---------- persistence helpers ----------
-
-    def dump_to_json_path(self, json_data, json_file_path: str):
-        """Write JSON with pretty formatting; create dirs as needed."""
-        os.makedirs(os.path.dirname(json_file_path), exist_ok=True)
-        with open(json_file_path, "w", encoding="utf-8") as f:
-            json.dump(json_data, f, ensure_ascii=False, indent=4)
-        self.logger.log_info(f"Saved JSON: {json_file_path}")
 
     # ---------- pickling-safe logger ----------
 
@@ -101,7 +93,7 @@ class PipelineAcrossSubjects(PipelineBase):
         # Aggregate across subjects
         agg = batch_mean_microstate([maps, self.n_k, self.n_ch, len(self.subjects), self.use_gpu])
         result = {
-            "maps": agg["maps"].tolist(),
+            "maps": agg["maps"],
             "label": agg["label"],
             "mean_similarity": agg["mean_similarity"],
             "std_similarity": agg["std_similarity"],

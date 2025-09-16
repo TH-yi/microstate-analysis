@@ -172,7 +172,7 @@ class MeanMicrostate:
         """
         Multi-start iterative alignment to compute stable mean microstates.
         Returns:
-            maps_best:   np.ndarray shape (n_k, n_ch)
+            maps_best:   list-list shape (n_k, n_ch)
             label_best:  list length n_condition, each array shape (n_k,)
             mean_sim:    float
             std_sim:     float
@@ -212,5 +212,24 @@ class MeanMicrostate:
                 best_ms, best_ss = float(mean_sim), float(std_sim)
                 best_labels = [np.asarray(x) for x in labels]
                 best_mean = np.asarray(mean_maps)
+        maps_py = [self._to_list(map) for map in best_mean]
+        labels_py = [self._to_list(lbl) for lbl in best_labels]
+        return maps_py, labels_py, float(best_ms), float(best_ss)
 
-        return best_mean, best_labels, float(best_ms), float(best_ss)
+
+    # --- list/JSON-friendly path ---
+    @staticmethod
+    def _to_list(x):
+        """Prefer list-like conversion for arrays, otherwise return as-is."""
+        try:
+            import cupy as cp
+            if isinstance(x, cp.ndarray):
+                x = cp.asnumpy(x)
+        except Exception:
+            pass
+        try:
+            import numpy as np
+            return x.tolist() if isinstance(x, np.ndarray) else x
+        except Exception:
+            return x
+

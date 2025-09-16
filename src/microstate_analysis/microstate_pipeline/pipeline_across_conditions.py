@@ -73,14 +73,6 @@ class PipelineAcrossConditions(PipelineBase):
         self.__dict__.update(state)
         self.logger = DualHandler(**self._logger_cfg)
 
-    # ---------- IO helpers ----------
-    def _dump_json(self, data_obj: Dict, out_dir: str, filename: str):
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, filename)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data_obj, f, ensure_ascii=False, indent=4)
-        self.logger.log_info(f"Saved JSON: {path}")
-
     def _load_input(self) -> Dict:
         in_path = os.path.abspath(os.path.join(self.input_dir, self.input_name))
         self.logger.log_info(f"Loading across-subjects input: {in_path}")
@@ -108,7 +100,7 @@ class PipelineAcrossConditions(PipelineBase):
         m_maps, m_label, m_mean, m_std = micro.mean_microstates()
 
         result = {
-            "maps": m_maps.tolist(),
+            "maps": m_maps,
             "label": m_label,
             "mean_similarity": m_mean,
             "std_similarity": m_std,
@@ -124,7 +116,7 @@ class PipelineAcrossConditions(PipelineBase):
         # }
 
         # Save
-        self._dump_json(result, self.output_dir, self.output_name)
+        self.dump_to_json(result, self.output_dir, self.output_name)
         self.logger.log_info("Across-conditions aggregation finished.")
 
 
