@@ -8,8 +8,9 @@ import os
 import codecs, json
 from microstate_analysis.microstate_base.similarity_calc import eegmaps_similarity_old, eegmaps_similarity_hungarian
 
-def plot_eeg(data, condition_name, n_k):
-    info = create_info()
+def plot_eeg(data, condition_name, n_k, channel_names=None,
+             montage_path=None, sampling_frequency=500, channel_types="eeg", missing_channel_behavior="raise"):
+    info = create_info(ch=channel_names, locs_path=montage_path, sfreq=sampling_frequency, ch_types=channel_types, on_missing=missing_channel_behavior)
     for k in range(n_k):
         ax_all = gridspec.GridSpec(10, 5, figure=plt.figure(figsize=(10, 100)))
         for a_condition_name in condition_name:
@@ -22,8 +23,9 @@ def plot_eeg(data, condition_name, n_k):
         plt.show()
 
 
-def plot_eegmap_conditions(eegmaps, condition_name, n_k, order=None, sign=None, savepath=None):
-    info = create_info()
+def plot_eegmap_conditions(eegmaps, condition_name, n_k, channel_names=None, order=None, sign=None, savepath=None,
+                           montage_path=None, sampling_frequency=500, channel_types="eeg", missing_channel_behavior="raise"):
+    info = create_info(ch=channel_names, locs_path=montage_path, sfreq=sampling_frequency, ch_types=channel_types, on_missing=missing_channel_behavior)
     n_condition = len(condition_name)
     row = n_condition
     col = n_k
@@ -52,8 +54,10 @@ def plot_eegmap_conditions(eegmaps, condition_name, n_k, order=None, sign=None, 
         plt.show()
 
 
-def plot_eegmap_one_row(maps, order=None, sign=None, savepath=None):
-    info = create_info()
+def plot_eegmap_one_row(maps, order=None, sign=None, savepath=None, channel_names=None,
+                        montage_path=None, sampling_frequency=500, channel_types="eeg",
+                        missing_channel_behavior="raise"):
+    info = create_info(ch=channel_names, locs_path=montage_path, sfreq=sampling_frequency, ch_types=channel_types, on_missing=missing_channel_behavior)
 
     # If maps is a dict and contains 'maps', extract it
     if isinstance(maps, dict) and "maps" in maps:
@@ -89,8 +93,8 @@ def plot_eegmap_one_row(maps, order=None, sign=None, savepath=None):
     #plt.show()
 
 
-def plot_eegmaps_old(maps, task_name):
-    info = create_info()
+def plot_eegmaps_old(maps, task_name, channel_names=None, montage_path=None, sampling_frequency=500, channel_types="eeg", missing_channel_behavior="raise"):
+    info = create_info(ch=channel_names, locs_path=montage_path, sfreq=sampling_frequency, ch_types=channel_types, on_missing=missing_channel_behavior)
     min_value = maps[0].min()
     max_value = maps[0].max()
     if len(task_name) == 1:
@@ -122,8 +126,9 @@ def plot_eegmaps_old(maps, task_name):
         plt.show()
 
 
-def plot_eegmaps(data, task_names, first_row_order=[], sign=None, savepath=None, minmax=False):
-    info = create_info()
+def plot_eegmaps(data, task_names, first_row_order=[], sign=None, savepath=None, minmax=False, channel_names=None,
+                 montage_path=None, sampling_frequency=500, channel_types="eeg", missing_channel_behavior="raise"):
+    info = create_info(ch=channel_names, locs_path=montage_path, sfreq=sampling_frequency, ch_types=channel_types, on_missing=missing_channel_behavior)
     maps = []
     for task_name in task_names:
         if task_name not in data:

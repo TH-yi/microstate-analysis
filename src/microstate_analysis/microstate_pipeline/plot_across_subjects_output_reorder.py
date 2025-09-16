@@ -45,6 +45,8 @@ class PlotAcrossSubjectsOutput(PipelineBase):
         log_dir=None,
         log_prefix: str = "plot_across_subjects",
         log_suffix: str = "",
+        custom_channel_names=None,
+        custom_montage_path=None, sampling_frequency=500, channel_types="eeg", missing_channel_behavior="raise"
     ):
         super().__init__()
         self.input_json_path = input_json_path
@@ -52,8 +54,12 @@ class PlotAcrossSubjectsOutput(PipelineBase):
         self.reordered_json_path = reordered_json_path
         self.conditions = conditions
         self.map_condition_name = map_condition_name or ["maps"]
-        self.first_row_order = first_row_order or [3, 5, 4, 1, 0, 2]
-
+        self.first_row_order = first_row_order or [0, 1, 2, 3, 4, 5]
+        self.channel_names=custom_channel_names
+        self.montage_path = custom_montage_path
+        self.sampling_frequency = sampling_frequency
+        self.channel_types = channel_types
+        self.missing_channel_behavior = missing_channel_behavior
         # Logger config & instance (rebuildable in child processes if later extended)
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
         self.logger = DualHandler(**self._logger_cfg)
@@ -116,7 +122,9 @@ class PlotAcrossSubjectsOutput(PipelineBase):
             data,
             self.map_condition_name,
             first_row_order=self.first_row_order,      # default [3,5,4,1,0,2]
-            savepath=self.output_img_dir,
+            savepath=self.output_img_dir, channel_names=self.channel_names,
+            montage_path=self.montage_path, sampling_frequency=self.sampling_frequency,
+            channel_types=self.channel_types, missing_channel_behavior=self.missing_channel_behavior
         )
         self.logger.log_info(f"Computed order from plot_eegmaps: {order}")
 
@@ -141,7 +149,7 @@ if __name__ == "__main__":
 
     # Plotting options
     map_condition_name = ["idea_generation", "idea_evolution", "idea_rating", "rest"]  # key(s) used by plot_eegmaps
-    first_row_order = [3, 5, 4, 1, 0, 2]     # preserve your original choice
+    first_row_order = [0, 1, 2, 3, 4, 5]     # preserve your original choice
 
     # Logging
     log_dir = "../../../storage/log/plot_across_subjects"
@@ -159,6 +167,11 @@ if __name__ == "__main__":
         log_dir=log_dir,
         log_prefix=log_prefix,
         log_suffix=log_suffix,
+        custom_channel_names=None,
+        custom_montage_path=None,
+        sampling_frequency=500,
+        channel_types="eeg",
+        missing_channel_behavior="raise"
     )
     job.logger.log_info("Start plot_across_subjects pipeline")
     job.plot_and_reorder()
