@@ -158,7 +158,8 @@ def plot_eegmaps(data, task_names, first_row_order=[], sign=None, savepath=None,
     reordered_data = {}  # Store reordered maps and indices
 
     if len(task_names) == 1:
-        sign = sign if sign else np.ones(6)
+        if sign is None:
+            sign = np.ones(6)
         ax_all = gridspec.GridSpec(1, 6, figure=fig)
         for j in range(len(maps[0])):
             ax = plt.subplot(ax_all[j])

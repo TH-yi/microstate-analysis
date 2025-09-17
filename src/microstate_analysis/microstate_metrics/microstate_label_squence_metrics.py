@@ -229,11 +229,11 @@ def metrics_for_labels(labels: Iterable[Any],
 
     out["transition_frequency"] = transition_frequency(lab, sfreq=sfreq)
     out["entropy_rate"] = entropy_rate(lab, states=st, log_base=log_base)
-
-    hurst_dict = hurst_from_labels(lab, states=st, aggregate=not include_state_hurst)
-    out.update(hurst_dict)
-    if not include_state_hurst and "hurst_mean" not in out:
-        vals = [v for k, v in hurst_dict.items() if k.startswith("hurst_") and not np.isnan(v)]
-        out["hurst_mean"] = float(np.mean(vals)) if len(vals) else np.nan
+    if include_state_hurst:
+        hurst_dict = hurst_from_labels(lab, states=st, aggregate=not include_state_hurst)
+        out.update(hurst_dict)
+        if "hurst_mean" not in out:
+            vals = [v for k, v in hurst_dict.items() if k.startswith("hurst_") and not np.isnan(v)]
+            out["hurst_mean"] = float(np.mean(vals)) if len(vals) else np.nan
 
     return out

@@ -17,7 +17,7 @@ from multiprocessing import get_context
 from microstate_analysis.microstate_pipeline.pipeline_base import PipelineBase
 from microstate_analysis.logger.dualhandler import DualHandler
 # NEW: use the new wrapper
-from microstate_analysis.microstate_base.parameter import batch_microstate_parameters_selective
+from microstate_analysis.microstate_metrics.parameter import batch_microstate_parameters_selective
 from microstate_analysis.microstate_base.data_handler import list_to_matrix
 
 
@@ -211,7 +211,7 @@ if __name__ == '__main__':
         task_name=task_name,
         # new selective controls:
         parameters=selected_params,
-        include_duration_seconds=False,  # set True if you requested duration_seconds*
+        include_duration_seconds=True,  # set True if you requested duration_seconds*
         log_base=math.e,
         states=None,
         # logging:

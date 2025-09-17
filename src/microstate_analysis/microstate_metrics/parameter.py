@@ -42,24 +42,6 @@ def batch_microstate_parameters(para):
                                              epoch)
 
 
-def eegmaps_parameters_across_runs(clean_data_fname, subjects, data_fname, data_fname_save, condition_name, tasks_name):
-    for subject in subjects:
-        print(subject)
-        data = load_data(clean_data_fname + "\\" + subject + data_fname)
-        res = {}
-        for i, task_name in enumerate(tasks_name):
-            duration = []
-            coverage = []
-            res[condition_name[i]] = {}
-            for a_task_name in task_name:
-                duration.extend(data[a_task_name]["duration"])
-                coverage.extend(data[a_task_name]["coverage"])
-            res[condition_name[i]]['duration'] = exclude_zero_mean(np.asarray(duration)).tolist()
-            res[condition_name[i]]['coverage'] = np.asarray(coverage).mean(axis=0).tolist()
-        json.dump(res, codecs.open(clean_data_fname + "\\" + subject + data_fname_save, 'w', encoding='utf-8'),
-                  separators=(',', ':'), sort_keys=True, indent=4)
-
-# new batch parameters handler for new microstate with extended label sequence metrics
 def batch_microstate_parameters_selective(para):
     """
     Batch wrapper for selective microstate metrics, designed for multiprocessing pools.
@@ -92,27 +74,27 @@ def batch_microstate_parameters_selective(para):
 
     # -------- unpack inputs (support tuple/list or dict) --------
     if isinstance(para, dict):
-        data      = para.get("data")
-        maps      = para.get("maps")
-        distance  = para.get("distance", 10)
-        n_std     = para.get("n_std", 3)
-        polarity  = para.get("polarity", False)
-        sfreq     = para.get("sfreq", 500)
-        epoch     = para.get("epoch", 2.0)
+        data = para.get("data")
+        maps = para.get("maps")
+        distance = para.get("distance", 10)
+        n_std = para.get("n_std", 3)
+        polarity = para.get("polarity", False)
+        sfreq = para.get("sfreq", 500)
+        epoch = para.get("epoch", 2.0)
         parameters = para.get("parameters", None)  # e.g., {"coverage","duration_seconds","entropy_rate"}
         include_duration_seconds = para.get("include_duration_seconds", False)
-        log_base  = para.get("log_base", math.e)
-        states    = para.get("states", None)
+        log_base = para.get("log_base", math.e)
+        states = para.get("states", None)
     else:
         # positional: keep full backward-compat with the first 7 fields
         # extras (optional): parameters, include_duration_seconds, log_base, states
-        data     = para[0]
-        maps     = para[1]
+        data = para[0]
+        maps = para[1]
         distance = para[2]
-        n_std    = para[3]
+        n_std = para[3]
         polarity = para[4]
-        sfreq    = para[5]
-        epoch    = para[6]
+        sfreq = para[5]
+        epoch = para[6]
 
         parameters = None
         include_duration_seconds = False

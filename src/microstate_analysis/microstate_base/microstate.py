@@ -1,8 +1,7 @@
 from scipy import signal
-import numpy as np
 
 from microstate_analysis.eeg_tool.math_utilis import zero_mean
-from microstate_analysis.microstate_base.microstate_label_squence_metrics import *
+from microstate_analysis.microstate_metrics.microstate_label_squence_metrics import *
 from typing import Set
 
 # ---- GPU optional backend (CuPy) adapter ----
@@ -319,13 +318,55 @@ class Microstate:
                     out['hurst_states'].append({k: v for k, v in met.items() if k.startswith('hurst_')})
 
                 if 'duration_seconds' in params and include_duration_seconds:
-                    # Pull per-state second-based means; keys are duration_mean_<s>
+                    # We will produce three aligned lists per epoch:
+                    #   duration_seconds_mean    : list[float] per state order 'st'
+                    #   duration_seconds_median  : list[float]
+                    #   duration_seconds_std     : list[float]
+
+                    # 1) Mean from metrics_for_labels if available
                     dur_keys = [f"duration_mean_{s}" for s in st]
-                    # If not available (e.g., sfreq<=0), store NaNs
+                    mean_row: List[float]
                     if all(k in met for k in dur_keys):
-                        out['duration_seconds'].append([float(met[k]) for k in dur_keys])
+                        mean_row = [float(met[k]) for k in dur_keys]
                     else:
-                        out['duration_seconds'].append([np.nan] * n_maps)
+                        mean_row = [np.nan] * n_maps
+
+                    # 2) Median / Std from run-lengths (convert samples -> seconds)
+                    if sfreq and sfreq > 0:
+                        per_state_runs = Microstate._state_run_lengths(np.asarray(label), st)
+                        # convert each run length (samples) to seconds
+                        sec_lists = {s: (np.asarray(per_state_runs.get(s, []), dtype=float) / float(sfreq))
+                                     for s in st}
+
+                        def safe_median(x: np.ndarray) -> float:
+                            return float(np.median(x)) if x.size > 0 else float('nan')
+
+                        def safe_std(x: np.ndarray) -> float:
+                            # population std (ddof=0) for stability with few segments
+                            return float(np.std(x, ddof=0)) if x.size > 0 else float('nan')
+
+                        median_row = [safe_median(sec_lists[s]) for s in st]
+                        std_row = [safe_std(sec_lists[s]) for s in st]
+                    else:
+                        # No valid sampling rate -> cannot report seconds
+                        median_row = [np.nan] * n_maps
+                        std_row = [np.nan] * n_maps
+
+                    # Backward-compatible key rename: user requested 'duration_seconds',
+                    # we expose explicit suffixed keys.
+                    if 'duration_seconds' in out:
+                        out['duration_seconds_mean'] = out.pop('duration_seconds')
+                    if 'duration_seconds_mean' not in out:
+                        out['duration_seconds_mean'] = []
+                    if 'duration_seconds_median' not in out:
+                        out['duration_seconds_median'] = []
+                    if 'duration_seconds_std' not in out:
+                        out['duration_seconds_std'] = []
+
+                    out['duration_seconds_mean'].append(mean_row)
+                    out['duration_seconds_median'].append(median_row)
+                    out['duration_seconds_std'].append(std_row)
+
 
                 if 'transition_matrix' in params:
                     P, _ = transition_matrix(label, states=st)
@@ -419,10 +460,10 @@ class Microstate:
 
         if method == 'kmeans_modified':
             for n_maps in range(min_maps, temp_max_maps + 1):
-                if n_maps == min_maps or n_maps == max_maps or n_maps % 5 == 0:
-                    print(
-                        "kmeans_number:{number}/{maxi} will run {runs} times".format(number=n_maps, maxi=temp_max_maps,
-                                                                                     runs=n_runs))
+                # if n_maps == min_maps or n_maps == max_maps or n_maps % 5 == 0:
+                #     print(
+                #         "kmeans_number:{number}/{maxi} will run {runs} times".format(number=n_maps, maxi=temp_max_maps,
+                #                                                                      runs=n_runs))
                 cv, gev, maps, label = self.kmeans_modified(data=temp_data, data_std=temp_data_std, n_runs=n_runs,
                                                             n_maps=n_maps, maxerr=maxerr, maxiter=maxiter,
                                                             polarity=polarity)
@@ -516,3 +557,27 @@ class Microstate:
             n_maps = len(maps)
 
         return cv_list[::-1], gev_list[::-1], maps_list[::-1], res_label_list[::-1]
+
+    @staticmethod
+    def _state_run_lengths(label: np.ndarray, states: List[int]) -> Dict[int, List[int]]:
+        """
+        Run-length encode the label sequence and collect per-state run lengths (in samples).
+        Returns a dict: state -> list of run lengths (each length is an int in samples).
+        """
+        lab = np.asarray(label)
+        if lab.size == 0:
+            return {s: [] for s in states}
+
+        # RLE: boundaries where label changes (True at 0 to start the first run)
+        boundaries = np.r_[True, lab[1:] != lab[:-1]]
+        idx = np.flatnonzero(boundaries)
+        # Run lengths are differences between consecutive boundaries, with last run to end
+        lengths = np.diff(np.r_[idx, lab.size])
+
+        run_states = lab[idx]
+        per_state = {s: [] for s in states}
+        for st, ln in zip(run_states, lengths):
+            if st in per_state:
+                per_state[st].append(int(ln))
+        return per_state
+
