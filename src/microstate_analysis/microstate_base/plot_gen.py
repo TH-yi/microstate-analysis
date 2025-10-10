@@ -20,7 +20,7 @@ def plot_eeg(data, condition_name, n_k, channel_names=None,
                     ax = plt.subplot(ax_all[row, col])
                     mne.viz.plot_topomap(np.asarray(maps[row][k]), info, show=False, axes=ax, image_interp='spline36',
                                          contours=6)
-        plt.show()
+    plt.show()
 
 
 def plot_eegmap_conditions(eegmaps, condition_name, n_k, channel_names=None, order=None, sign=None, savepath=None,

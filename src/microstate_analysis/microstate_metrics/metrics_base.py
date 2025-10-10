@@ -22,7 +22,7 @@ class MetricsBase():
             json_file_path = os.path.join(output_dir, file_name)
 
             # Sanitize before dumping
-            coercions: List[Tuple[str, str, str]] = []
+            coercions = []
             safe_data = self._json_safe(json_data, _conversions=coercions)
 
             with open(json_file_path, 'w', encoding='utf-8') as json_file:
@@ -54,7 +54,7 @@ class MetricsBase():
                 self.logger.log_info(f"Output directory {output_dir} created.")
 
             # Sanitize before dumping
-            coercions: List[Tuple[str, str, str]] = []
+            coercions = []
             safe_data = self._json_safe(json_data, _conversions=coercions)
 
             with open(json_file_path, 'w', encoding='utf-8') as json_file:

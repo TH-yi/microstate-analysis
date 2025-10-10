@@ -11,6 +11,7 @@ from microstate_analysis.microstate_pipeline.pipeline_across_conditions import P
 from microstate_analysis.microstate_pipeline.plot_across_subjects_output_reorder import PlotAcrossSubjectsOutput
 from microstate_analysis.microstate_pipeline.plot_across_conditions_output_reorder import PlotAcrossConditionsOutput
 from microstate_analysis.microstate_metrics.metrics_parameters import MetricsParameters
+from microstate_analysis.microstate_quality.gev_sum_calc import GEVSumCalc
 
 app = typer.Typer(help="Microstate Analysis CLI")
 
@@ -349,5 +350,97 @@ def cli_parameters_run(
         job.logger.log_info("[CLI] metrics parameters-run started")
         job.generate_microstate_parameters(max_processes=max_processes)
         job.logger.log_info("[CLI] metrics parameters-run finished")
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+@metrics_app.command("gev-sum")
+def cli_metrics_gev_sum(
+    csv_dir: str = typer.Option(...),
+    maps_file: str = typer.Option(...),
+    output_dir: str = typer.Option(...),
+    mode: str = typer.Option("across_subjects"),
+    subjects: List[str] = typer.Option(...),
+    task_names: List[str] = typer.Option(...),
+    condition_dict_json: str = typer.Option(...),
+    log_dir: Optional[str] = typer.Option(None),
+    log_prefix: str = typer.Option("gev_sum"),
+    log_suffix: str = typer.Option(""),
+    max_processors: int = typer.Option(
+        0,
+        help="Max processes to use. <=0 uses all logical CPU cores.",
+    ),
+):
+    """
+    Compute weighted GEV stats per condition using CSV data and microstate maps.
+    """
+    try:
+        condition_dict = json.loads(condition_dict_json)
+
+        job = GEVSumCalc(
+            log_dir=log_dir,
+            log_prefix=log_prefix + (f"_{log_suffix}" if log_suffix else ""),
+            csv_dir=csv_dir,
+            maps_path=maps_file,
+            subjects=subjects,
+            task_names=task_names,
+            condition_dict=condition_dict,
+            mode=mode,
+        )
+        job.logger.log_info("[CLI] metrics gev-sum started")
+        job.run(output_dir=output_dir, max_processors=max_processors)  # <<< NEW
+        job.logger.log_info("[CLI] metrics gev-sum finished")
+
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+@metrics_app.command("cluster-quality")
+def cli_cluster_quality(
+    mode: str = typer.Option("across_subjects", help="across_subjects | across_conditions"),
+    csv_dir: str = typer.Option(..., help="Root dir: {csv_dir}/{subject}/*.csv"),
+    output_dir: str = typer.Option(..., help="Directory to save the summary JSON"),
+    result_name: str = typer.Option(..., help="Output JSON name without suffix"),
+    # Provide either `conditions` OR `condition_dict_json`
+    conditions: List[str] = typer.Option(None, help="e.g., idea_generation idea_evolution idea_rating rest"),
+    condition_dict_json: Optional[str] = typer.Option(
+        None,
+        help='JSON: {"idea_generation": ["1_idea generation","2_idea generation",...], "rest":["1_rest","3_rest"]}',
+    ),
+    label_column: str = typer.Option("microstate_label", help="Name of the label column in CSVs"),
+    log_dir: Optional[str] = typer.Option(None),
+    log_prefix: str = typer.Option("cluster_quality"),
+    max_processors: int = typer.Option(
+        0,
+        help="Max processes to use. <=0 uses all logical CPU cores.",
+    ),
+):
+    """
+    Compute Silhouette & WCSS per condition, aggregating mean/std across files.
+    Provide either `conditions` OR a richer `condition_dict_json`.
+    """
+    try:
+        cond_dict = json.loads(condition_dict_json) if condition_dict_json else None
+
+        from microstate_analysis.microstate_quality.cluster_quality_analysis import (
+            ClusterQualityAnalysis,
+        )
+
+        job = ClusterQualityAnalysis(log_dir=log_dir, log_prefix=log_prefix)
+        job.logger.log_info("[CLI] metrics cluster-quality started")
+
+        results = job.run(
+            mode=mode,
+            csv_dir=csv_dir,
+            output_dir=output_dir,
+            result_name=result_name,
+            conditions=conditions,
+            condition_dict=cond_dict,
+            label_column=label_column,
+            max_processors=max_processors,  # <<< NEW
+        )
+
+        job.logger.log_info("[CLI] metrics cluster-quality finished")
+        typer.echo(json.dumps(results, indent=2))
+
     except Exception as e:
         typer.echo(f"[ERROR] {e}", err=True)
