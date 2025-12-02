@@ -45,7 +45,9 @@ from collections import OrderedDict, deque, defaultdict
 from multiprocessing import get_context
 from typing import Dict, Deque, Tuple, Optional, Any
 
+import h5py
 import numpy as np
+from scipy.io import loadmat
 
 from microstate_analysis.microstate_pipeline.pipeline_base import PipelineBase
 from microstate_analysis.logger.dualhandler import DualHandler
@@ -463,21 +465,61 @@ class PipelineIndividualRun(PipelineBase):
 
     def _load_subject_data(self, subject: str) -> Dict[str, np.ndarray]:
         """
-        Load one subject's JSON and convert each task's list to a C-contiguous float64 ndarray.
-        (We keep raw orientation here; worker will normalize to (channels, times) before compute.)
-        """
-        path = os.path.abspath(os.path.join(self.input_dir, f"{subject}.json"))
-        with open(path, 'r', encoding='utf-8') as f:
-            raw = json.load(f)
+        Load one subject's data file (JSON preferred, MAT as fallback).
 
-        out: Dict[str, np.ndarray] = {}
-        for t in self.task_name:
-            arr = list_to_matrix(raw[t])
-            if not isinstance(arr, np.ndarray):
-                arr = np.asarray(arr)
-            # Enforce a stable memory layout & dtype early (pickle will carry this efficiently)
-            out[t] = np.ascontiguousarray(arr, dtype=np.float64)
-        return out
+        - If a JSON file exists, parse it and convert each task's list to a C-contiguous float64 ndarray.
+        - If no JSON file exists, attempt to read a .mat file and extract all variables
+          whose values are 2D numeric arrays (e.g., 'Sig_IDE_1', 'Sig_IDG_2', etc.).
+        - The output format must match the JSON version: a dict[str, np.ndarray].
+
+        Automatically supports MATLAB v7.3 HDF5 format via h5py.
+
+        Raises:
+            FileNotFoundError: If neither a .json nor a .mat file exists for this subject.
+        """
+        json_path = os.path.abspath(os.path.join(self.input_dir, f"{subject}.json"))
+        mat_path = os.path.abspath(os.path.join(self.input_dir, f"{subject}.mat"))
+
+        # Try loading JSON file first
+        if os.path.exists(json_path):
+            with open(json_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+
+            out: Dict[str, np.ndarray] = {}
+            for t in self.task_name:
+                arr = np.asarray(raw[t], dtype=np.float64)
+                out[t] = np.ascontiguousarray(arr)
+            return out
+
+        # If JSON not found, try loading MAT file
+        # Try loading MAT (v7.2 or earlier)
+        elif os.path.exists(mat_path):
+            try:
+                mat_data = loadmat(mat_path)
+                out = {}
+                for var_name, value in mat_data.items():
+                    if isinstance(value, np.ndarray) and value.ndim == 2 and not var_name.startswith("__"):
+                        out[var_name] = np.ascontiguousarray(value, dtype=np.float64)
+                if out:
+                    return out
+            except NotImplementedError:
+                # Fall back to HDF5 reader for v7.3 MAT files
+                out = {}
+                with h5py.File(mat_path, 'r') as f:
+                    for key in f.keys():
+                        data = np.array(f[key])
+                        # MATLAB stores data as (samples, channels) → transpose if needed
+                        if data.ndim == 2:
+                            # Ensure float64 & C contiguous
+                            out[key] = np.ascontiguousarray(data, dtype=np.float64)
+                if not out:
+                    raise ValueError(f"No valid arrays found in {mat_path}")
+                return out
+
+
+        # Neither JSON nor MAT exists
+        else:
+            raise FileNotFoundError(f"Neither {json_path} nor {mat_path} exists.")
 
     # ---------- Scheduling ----------
 

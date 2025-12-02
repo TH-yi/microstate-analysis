@@ -1,8 +1,8 @@
-import numpy as np
 from multiprocessing import Pool
 import json
 import codecs
-
+import math
+import numpy as np
 from microstate_analysis.microstate_base.microstate import Microstate
 from microstate_analysis.microstate_base.data_handler import load_data
 from microstate_analysis.eeg_tool.algorithm.clustering.microstate import exclude_zero_mean
@@ -69,8 +69,6 @@ def batch_microstate_parameters_selective(para):
     Returns:
         Dict[str, List[Any]]: one entry per requested metric; each value is a list aligned by epoch.
     """
-    import math
-    import numpy as np
 
     # -------- unpack inputs (support tuple/list or dict) --------
     if isinstance(para, dict):

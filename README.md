@@ -283,19 +283,19 @@ on each subject × task × epoch. You can choose which metrics to calculate.
 
 **Key options**
 
-| Option | Type | Required | Description |
-|---|---|---:|---|
-| `--input-dir` | str | ✓ | Directory containing per-subject raw JSON. |
-| `--output-dir` | str | ✓ | Directory to save `{subject}_parameters.json`. |
-| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects sub_01 --subjects sub_02`). |
-| `--task-name` | list[str] | ✓ | Repeat per task label. |
-| `--maps-file` | str | ✓ | Path to JSON file of maps. |
-| `--parameters` | list[str] |  | Metrics set. Supported: `coverage, duration, segments, duration_seconds, duration_seconds_std, duration_seconds_median, transition_frequency, entropy_rate, hurst_mean, hurst_states, transition_matrix`. |
-| `--include-duration-seconds` | flag |  | If `duration_seconds*` requested, report values in seconds. |
-| `--log-base` | float |  | Base for entropy rate (default e). |
-| `--states` | list[int] |  | Explicit state order. |
-| `--max-processes` | int |  | Cap worker processes. |
-| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging config. |
+| Option | Type | Required | Description                                                                                                                                                                                                |
+|---|---|---:|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--input-dir` | str | ✓ | Directory containing per-subject raw JSON.                                                                                                                                                                 |
+| `--output-dir` | str | ✓ | Directory to save `{subject}_parameters.json`.                                                                                                                                                             |
+| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects sub_01 --subjects sub_02`).                                                                                                                                          |
+| `--task-name` | list[str] | ✓ | Repeat per task label.                                                                                                                                                                                     |
+| `--maps-file` | str | ✓ | Path to JSON file of maps.                                                                                                                                                                                 |
+| `--parameters` | list[str] |  | Metrics set. Supported: `coverage, duration, segments, duration_seconds, duration_seconds_std,  duration_seconds_median, transition_frequency, entropy_rate, hurst_mean, hurst_states, transition_matrix`. |
+| `--include-duration-seconds` | flag |  | If `duration_seconds*` requested, report values in seconds.                                                                                                                                                |
+| `--log-base` | float |  | Base for entropy rate (default e).                                                                                                                                                                         |
+| `--states` | list[int] |  | Explicit state order.                                                                                                                                                                                      |
+| `--max-processes` | int |  | Cap worker processes.                                                                                                                                                                                      |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging config.                                                                                                                                                                                            |
 
 **Default metrics if omitted**:  
 `coverage, duration, transition_frequency, entropy_rate, hurst_mean`
