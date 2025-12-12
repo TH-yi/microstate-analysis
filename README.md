@@ -88,7 +88,7 @@ Compute microstate results for each subject × task from raw per-subject JSON fi
 **Example (one-line):**
 
 ```bash
-microstate-analysis microstate-pipeline individual-run --input-dir storage/clean_data --output-dir storage/microstate_output/individual_run --subjects "sub_01" --subjects "sub_02" --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --peaks-only --min-maps 2 --max-maps 10 --save-task-map-counts --task-map-counts-output-dir storage/microstate_output/individual_run --task-map-counts-output-filename individual_map_counts --max-processes 8 --log-dir storage/log/individual_run --log-prefix individual_run
+microstate-analysis microstate-pipeline individual-run --input-dir storage/clean_data --output-dir storage/microstate_output/individual_run --subjects "sub_01" --subjects "sub_02" --subjects "sub_03" --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --peaks-only --min-maps 2 --max-maps 10 --save-task-map-counts --task-map-counts-output-dir storage/microstate_output/individual_run --task-map-counts-output-filename individual_map_counts --max-processes 8 --log-dir storage/log/individual_run --log-prefix individual_run
 ```
 
 ---
