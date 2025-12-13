@@ -53,7 +53,7 @@ class PlotAcrossSubjectsOutput(PipelineBase):
         self.output_img_dir = output_img_dir
         self.reordered_json_path = reordered_json_path
         self.conditions = conditions
-        self.map_condition_name = map_condition_name or ["maps"]
+        self.map_condition_name = map_condition_name or conditions or ["maps"]
         self.first_row_order = first_row_order or [0, 1, 2, 3, 4, 5]
         self.channel_names=custom_channel_names
         self.montage_path = custom_montage_path

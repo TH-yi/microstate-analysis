@@ -130,9 +130,10 @@ def plot_eegmaps(data, task_names, first_row_order=[], sign=None, savepath=None,
                  montage_path=None, sampling_frequency=500, channel_types="eeg", missing_channel_behavior="raise"):
     info = create_info(ch=channel_names, locs_path=montage_path, sfreq=sampling_frequency, ch_types=channel_types, on_missing=missing_channel_behavior)
     maps = []
+    #print(f"plot_eegmaps for across_subject, tasks: {task_names}")
     for task_name in task_names:
         if task_name not in data:
-            raise ValueError(f"Task {task_name} not found in the data!")
+            raise ValueError(f"Task '{task_name}' not found in the data!")
         if isinstance(data[task_name], list):
             task_maps = np.array(data[task_name])
         elif isinstance(data[task_name], dict):
@@ -140,7 +141,7 @@ def plot_eegmaps(data, task_names, first_row_order=[], sign=None, savepath=None,
         else:
             raise TypeError("Invalid input data")
         if task_maps.shape != (6, 63):
-            raise ValueError(f"Task {task_name} maps should have shape [6, 63], but got {task_maps.shape}.")
+            raise ValueError(f"Task '{task_name}' maps should have shape [6, 63], but got {task_maps.shape}.")
         maps.append(task_maps)
 
     # Reorder first row maps

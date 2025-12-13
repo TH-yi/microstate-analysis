@@ -215,8 +215,14 @@ def cli_plot_across_subjects(
         input_json_path: str = typer.Option(...),
         output_img_dir: str = typer.Option(...),
         reordered_json_path: str = typer.Option(...),
-        conditions: List[str] = typer.Option(["idea_generation", "idea_evolution", "idea_rating", "rest"]),
-        first_row_order: List[int] = typer.Option([3, 5, 4, 1, 0, 2]),
+        conditions: List[str] = typer.Option(
+            ["idea_generation", "idea_evolution", "idea_rating", "rest"],
+            "--conditions",
+        ),
+        first_row_order: List[int] = typer.Option(
+            [3, 5, 4, 1, 0, 2],
+            "--first-row-order",
+        ),
         log_dir: Optional[str] = typer.Option(None),
         log_prefix: str = typer.Option("plot_across_subjects"),
         log_suffix: str = typer.Option(""),
