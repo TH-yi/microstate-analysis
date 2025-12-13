@@ -26,7 +26,7 @@ state = GlobalState()
 
 def version_callback(value: bool):
     if value:
-        print("microstate_analysis 0.2.0")
+        print("microstate_analysis 0.2.1")
         raise typer.Exit()
 
 
