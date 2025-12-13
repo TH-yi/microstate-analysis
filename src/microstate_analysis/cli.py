@@ -12,6 +12,12 @@ from microstate_analysis.microstate_pipeline.plot_across_subjects_output_reorder
 from microstate_analysis.microstate_pipeline.plot_across_conditions_output_reorder import PlotAcrossConditionsOutput
 from microstate_analysis.microstate_metrics.metrics_parameters import MetricsParameters
 from microstate_analysis.microstate_quality.gev_sum_calc import GEVSumCalc
+from microstate_analysis.pca.pca_gfp import PCAGFP
+from microstate_analysis.pca_microstate_pipeline.pca_pipeline_individual_run import PCAPipelineIndividualRun
+from microstate_analysis.pca_microstate_pipeline.pca_pipeline_across_runs import PCAPipelineAcrossRuns
+from microstate_analysis.pca_microstate_pipeline.pca_pipeline_across_subjects import PCAPipelineAcrossSubjects
+from microstate_analysis.pca_microstate_pipeline.pca_pipeline_across_conditions import PCAPipelineAcrossConditions
+from microstate_analysis.pca_microstate_pipeline.pca_pipeline_complete import PCACompletePipeline
 
 app = typer.Typer(help="Microstate Analysis CLI")
 
@@ -448,5 +454,284 @@ def cli_cluster_quality(
         job.logger.log_info("[CLI] metrics cluster-quality finished")
         typer.echo(json.dumps(results, indent=2))
 
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+# ===== PCA =====
+pca_app = typer.Typer(help="PCA dimensionality reduction pipelines.")
+app.add_typer(pca_app, name="pca")
+
+
+@pca_app.command("gfp")
+def cli_pca_gfp(
+    input_dir: str = typer.Option(..., help="Directory containing GFP CSV files (structure: {input_dir}/{subject}/*.csv)."),
+    output_dir: str = typer.Option(..., help="Base output directory for PCA results."),
+    subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g., P01 P02 ..."),
+    percentages: List[float] = typer.Option(
+        [0.95, 0.98, 0.99],
+        help="Variance retention ratios for PCA (e.g., 0.95 0.98 0.99)."
+    ),
+    max_processes: Optional[int] = typer.Option(None, help="Max worker processes (default=CPU count)."),
+    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs. If omitted, logs go to stderr only."),
+    log_prefix: str = typer.Option("pca_gfp", help="Log filename prefix."),
+    log_suffix: str = typer.Option("", help="Log filename suffix."),
+):
+    """
+    Perform PCA dimensionality reduction on GFP CSV files.
+    Outputs eigenvalues, eigenvectors, and final transformed matrices for each percentage.
+    """
+    try:
+        job = PCAGFP(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            subjects=subjects,
+            percentages=percentages,
+            log_dir=log_dir,
+            log_prefix=log_prefix,
+            log_suffix=log_suffix,
+        )
+        job.logger.log_info("[CLI] pca gfp started")
+        job.run(max_processes=max_processes)
+        job.logger.log_info("[CLI] pca gfp finished")
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+# ===== PCA Microstate Pipeline =====
+pca_pipeline_app = typer.Typer(help="PCA microstate analysis pipelines.")
+pca_app.add_typer(pca_pipeline_app, name="microstate-pipeline")
+
+
+@pca_pipeline_app.command("individual-run")
+def cli_pca_individual_run(
+    pca_data_dir: str = typer.Option(..., help="Base directory containing PCA final_matrix data (structure: {pca_data_dir}/pca_{percentage}/final_matrix/{subject}/*.csv)."),
+    output_dir: str = typer.Option(..., help="Directory to save {subject}_pca_individual_maps.json"),
+    subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g., P01 P02 ..."),
+    task_name: List[str] = typer.Option(..., help="Task names, e.g., '1_idea generation' '2_idea generation' ..."),
+    percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
+    peaks_only: bool = typer.Option(False, help="Use peaks-only logic."),
+    min_maps: int = typer.Option(2, help="Minimum number of maps."),
+    max_maps: int = typer.Option(10, help="Maximum number of maps."),
+    opt_k: Optional[int] = typer.Option(None, help="Optional fixed K value."),
+    cluster_method: str = typer.Option("kmeans_modified", help="Clustering method."),
+    n_std: int = typer.Option(3, help="Threshold std."),
+    n_runs: int = typer.Option(100, help="Clustering restarts."),
+    save_task_map_counts: bool = typer.Option(True, help="Save per-task opt_k list across subjects."),
+    max_processes: Optional[int] = typer.Option(None, help="Cap worker processes."),
+    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
+    log_prefix: str = typer.Option("pca_individual_run", help="Log filename prefix."),
+    log_suffix: str = typer.Option("", help="Log filename suffix."),
+    use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
+):
+    """
+    Compute PCA microstate results for each subject × task from PCA-transformed CSV files.
+    """
+    try:
+        job = PCAPipelineIndividualRun(
+            pca_data_dir=pca_data_dir,
+            output_dir=output_dir,
+            subjects=subjects,
+            task_names=task_name,
+            percentage=percentage,
+            peaks_only=peaks_only,
+            min_maps=min_maps,
+            max_maps=max_maps,
+            opt_k=opt_k,
+            cluster_method=cluster_method,
+            n_std=n_std,
+            n_runs=n_runs,
+            log_dir=log_dir,
+            log_prefix=log_prefix,
+            log_suffix=log_suffix,
+            use_gpu=use_gpu,
+        )
+        job.logger.log_info("[CLI] pca microstate-pipeline individual-run started")
+        job.generate_individual_eeg_maps(
+            max_processes=max_processes,
+            save_task_map_counts=save_task_map_counts,
+        )
+        job.logger.log_info("[CLI] pca microstate-pipeline individual-run finished")
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+@pca_pipeline_app.command("complete")
+def cli_pca_complete(
+    input_dir: str = typer.Option(..., help="Directory containing raw per-subject JSON files (e.g., sub_01.json)."),
+    output_dir: str = typer.Option(..., help="Directory to save {subject}_pca_individual_maps.json"),
+    subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g., sub_01 sub_02 ..."),
+    task_name: List[str] = typer.Option(..., help="Task names, e.g., '1_idea generation' '2_idea generation' ..."),
+    percentage: float = typer.Option(0.95, help="PCA variance retention ratio (e.g., 0.95, 0.98, 0.99)."),
+    peaks_only: bool = typer.Option(False, help="Use peaks-only logic for microstate clustering."),
+    min_maps: int = typer.Option(2, help="Minimum number of maps."),
+    max_maps: int = typer.Option(10, help="Maximum number of maps."),
+    opt_k: Optional[int] = typer.Option(None, help="Optional fixed K value."),
+    cluster_method: str = typer.Option("kmeans_modified", help="Clustering method."),
+    n_std: int = typer.Option(3, help="Threshold std for microstate clustering."),
+    n_runs: int = typer.Option(100, help="Clustering restarts."),
+    gfp_distance: int = typer.Option(10, help="Minimum distance between GFP peaks."),
+    gfp_n_std: int = typer.Option(3, help="Number of standard deviations for GFP peak thresholding."),
+    save_task_map_counts: bool = typer.Option(True, help="Save per-task opt_k list across subjects."),
+    max_processes: Optional[int] = typer.Option(None, help="Cap worker processes."),
+    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
+    log_prefix: str = typer.Option("pca_complete", help="Log filename prefix."),
+    log_suffix: str = typer.Option("", help="Log filename suffix."),
+    use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
+):
+    """
+    Complete PCA microstate pipeline: Raw JSON → GFP peaks → PCA → Microstate clustering.
+    All-in-one pipeline that processes raw subject JSON files end-to-end.
+    """
+    try:
+        job = PCACompletePipeline(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            subjects=subjects,
+            task_names=task_name,
+            percentage=percentage,
+            peaks_only=peaks_only,
+            min_maps=min_maps,
+            max_maps=max_maps,
+            opt_k=opt_k,
+            cluster_method=cluster_method,
+            n_std=n_std,
+            n_runs=n_runs,
+            gfp_distance=gfp_distance,
+            gfp_n_std=gfp_n_std,
+            log_dir=log_dir,
+            log_prefix=log_prefix,
+            log_suffix=log_suffix,
+            use_gpu=use_gpu,
+        )
+        job.logger.log_info("[CLI] pca microstate-pipeline complete started")
+        job.generate_individual_eeg_maps(
+            max_processes=max_processes,
+            save_task_map_counts=save_task_map_counts,
+        )
+        job.logger.log_info("[CLI] pca microstate-pipeline complete finished")
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+@pca_pipeline_app.command("across-runs")
+def cli_pca_across_runs(
+    input_dir: str = typer.Option(..., help="Directory of per-subject individual maps JSONs."),
+    output_dir: str = typer.Option(..., help="Output dir for across-runs JSONs."),
+    data_suffix: str = typer.Option("_pca_individual_maps.json", help="Input filename suffix."),
+    save_suffix: str = typer.Option("_pca_across_runs.json", help="Output filename suffix."),
+    subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g., P01 P02 ..."),
+    percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
+    n_k: int = typer.Option(6, help="Number of microstates."),
+    n_k_index: int = typer.Option(1, help="Index into maps_list for each task/run."),
+    n_ch: int = typer.Option(63, help="Number of EEG channels."),
+    condition_dict_json: str = typer.Option(..., help='JSON string mapping condition -> list of tasks.'),
+    max_processes: Optional[int] = typer.Option(None, help="Max worker processes."),
+    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
+    log_prefix: str = typer.Option("pca_across_runs", help="Log filename prefix."),
+    log_suffix: str = typer.Option("", help="Log filename suffix."),
+):
+    """
+    Aggregate each subject's runs/tasks into conditions (per subject).
+    """
+    try:
+        condition_dict = json.loads(condition_dict_json)
+        job = PCAPipelineAcrossRuns(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            subjects=subjects,
+            condition_dict=condition_dict,
+            percentage=percentage,
+            n_k=n_k,
+            n_k_index=n_k_index,
+            n_ch=n_ch,
+            data_suffix=data_suffix,
+            save_suffix=save_suffix,
+            log_dir=log_dir,
+            log_prefix=log_prefix,
+            log_suffix=log_suffix,
+        )
+        job.logger.log_info("[CLI] pca microstate-pipeline across-runs started")
+        job.run(max_processes=max_processes)
+        job.logger.log_info("[CLI] pca microstate-pipeline across-runs finished")
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+@pca_pipeline_app.command("across-subjects")
+def cli_pca_across_subjects(
+    input_dir: str = typer.Option(..., help="Dir of per-subject across-runs JSONs."),
+    output_dir: str = typer.Option(..., help="Dir to save a single across-subjects JSON."),
+    data_suffix: str = typer.Option("_pca_across_runs.json", help="Input filename suffix."),
+    save_name: str = typer.Option("pca_across_subjects.json", help="Output filename."),
+    subjects: List[str] = typer.Option(..., help="Subjects list."),
+    condition_names: List[str] = typer.Option(..., help="Conditions."),
+    percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
+    n_k: int = typer.Option(6, help="Number of microstates."),
+    n_ch: int = typer.Option(63, help="Number of channels."),
+    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
+    log_prefix: str = typer.Option("pca_across_subjects", help="Log filename prefix."),
+    log_suffix: str = typer.Option("", help="Log filename suffix."),
+    max_processes: Optional[int] = typer.Option(None, help="Max worker processes."),
+):
+    """
+    Aggregate per-subject across-runs maps into condition-level maps.
+    """
+    try:
+        job = PCAPipelineAcrossSubjects(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            subjects=subjects,
+            condition_names=condition_names,
+            percentage=percentage,
+            n_k=n_k,
+            n_ch=n_ch,
+            data_suffix=data_suffix,
+            save_name=save_name,
+            log_dir=log_dir,
+            log_prefix=log_prefix,
+            log_suffix=log_suffix,
+        )
+        job.logger.log_info("[CLI] pca microstate-pipeline across-subjects started")
+        job.run(max_processes=max_processes)
+        job.logger.log_info("[CLI] pca microstate-pipeline across-subjects finished")
+    except Exception as e:
+        typer.echo(f"[ERROR] {e}", err=True)
+
+
+@pca_pipeline_app.command("across-conditions")
+def cli_pca_across_conditions(
+    input_dir: str = typer.Option(..., help="Dir of across-subjects JSON."),
+    input_name: str = typer.Option("pca_across_subjects.json", help="Input filename."),
+    output_dir: str = typer.Option(..., help="Dir to save across-conditions JSON."),
+    output_name: str = typer.Option("pca_across_conditions.json", help="Output filename."),
+    condition_names: List[str] = typer.Option(..., help="Conditions."),
+    percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
+    n_k: int = typer.Option(6, help="Number of microstates."),
+    n_ch: int = typer.Option(63, help="Number of channels."),
+    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
+    log_prefix: str = typer.Option("pca_across_conditions", help="Log filename prefix."),
+    log_suffix: str = typer.Option("", help="Log filename suffix."),
+):
+    """
+    Aggregate conditions into global microstate maps.
+    """
+    try:
+        job = PCAPipelineAcrossConditions(
+            input_dir=input_dir,
+            input_name=input_name,
+            output_dir=output_dir,
+            output_name=output_name,
+            condition_names=condition_names,
+            percentage=percentage,
+            n_k=n_k,
+            n_ch=n_ch,
+            log_dir=log_dir,
+            log_prefix=log_prefix,
+            log_suffix=log_suffix,
+        )
+        job.logger.log_info("[CLI] pca microstate-pipeline across-conditions started")
+        job.run()
+        job.logger.log_info("[CLI] pca microstate-pipeline across-conditions finished")
     except Exception as e:
         typer.echo(f"[ERROR] {e}", err=True)

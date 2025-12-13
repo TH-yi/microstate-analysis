@@ -312,7 +312,187 @@ microstate-analysis metrics parameters-run \
 ```
 ---
 
+## PCA Dimensionality Reduction
+
+### `pca gfp`
+
+Perform PCA dimensionality reduction on GFP CSV files. Outputs eigenvalues, eigenvectors, and final transformed matrices for each percentage.
+
+**Key options**
+
+| Option | Type | Required | Description |
+|---|---|---:|:---:|---|
+| `--input-dir` | str | ✓ | Directory containing GFP CSV files (structure: `{input_dir}/{subject}/*.csv`). |
+| `--output-dir` | str | ✓ | Base output directory for PCA results. |
+| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects P01 --subjects P02`). |
+| `--percentages` | list[float] |  | Variance retention ratios (default: `0.95 0.98 0.99`). |
+| `--max-processes` | int |  | Cap worker processes. |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging configuration. |
+
+**Example (one-line):**
+
+```bash
+microstate-analysis pca gfp --input-dir storage/gfp_data/gfp --output-dir storage/pca_output --subjects P01 --subjects P02 --subjects P03 --percentages 0.95 --percentages 0.98 --percentages 0.99 --max-processes 8 --log-dir storage/log/pca_gfp --log-prefix pca_gfp
+```
+
+---
+
+## PCA Microstate Pipeline
+
+The PCA microstate pipeline processes PCA-transformed data (from `pca gfp`) to generate microstate maps. The pipeline follows the same structure as the standard microstate pipeline but operates on PCA-reduced data.
+
+### 1) `pca microstate-pipeline complete` ⭐ **Recommended: All-in-One Pipeline**
+
+Complete end-to-end pipeline: Raw JSON → GFP peaks → PCA → Microstate clustering. Processes raw subject JSON files (e.g., `sub_01.json`) and automatically performs all steps.
+
+**Key options**
+
+| Option | Type | Required | Description |
+|---|---|---:|:---:|---|
+| `--input-dir` | str | ✓ | Directory containing raw per-subject JSON (e.g., `sub_01.json`). |
+| `--output-dir` | str | ✓ | Directory to save `{subject}_pca_individual_maps.json`. |
+| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects sub_01 --subjects sub_02`). |
+| `--task-name` | list[str] | ✓ | Repeat per task label (e.g., `--task-name "1_idea generation"`). |
+| `--percentage` | float |  | PCA variance retention ratio (default `0.95`). |
+| `--gfp-distance` | int |  | Minimum distance between GFP peaks (default `10`). |
+| `--gfp-n-std` | int |  | Number of standard deviations for GFP peak thresholding (default `3`). |
+| `--peaks-only` | flag |  | Use peaks-only logic for microstate clustering. |
+| `--min-maps` | int |  | Minimum K. |
+| `--max-maps` | int |  | Maximum K. |
+| `--cluster-method` | str |  | Clustering method (default `kmeans_modified`). |
+| `--n-std` | int |  | Threshold std for microstate clustering. |
+| `--n-runs` | int |  | Clustering restarts. |
+| `--max-processes` | int |  | Cap worker processes. |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging configuration. |
+| `--use-gpu` | flag |  | Enable GPU acceleration if available. |
+
+**Example (one-line):**
+
+```bash
+microstate-analysis pca microstate-pipeline complete --input-dir storage/clean_data --output-dir storage/pca_microstate_output/individual_run --subjects sub_01 --subjects sub_02 --subjects sub_03 --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --percentage 0.95 --min-maps 2 --max-maps 10 --max-processes 8 --log-dir storage/log/pca_complete --log-prefix pca_complete
+```
+
+---
+
+### 2) `pca microstate-pipeline individual-run`
+
+Compute microstate results for each subject × task from PCA-transformed CSV files. Produces `{subject}_pca_individual_maps.json` per subject.
+
+**Note**: Use `complete` command above for end-to-end processing from raw JSON files.
+
+**Key options**
+
+| Option | Type | Required | Description |
+|---|---|---:|:---:|---|
+| `--pca-data-dir` | str | ✓ | Base directory containing PCA final_matrix data (structure: `{pca_data_dir}/pca_{percentage}/final_matrix/{subject}/*.csv`). |
+| `--output-dir` | str | ✓ | Directory to save `{subject}_pca_individual_maps.json`. |
+| `--subjects` | list[str] | ✓ | Repeat per subject (e.g., `--subjects P01 --subjects P02`). |
+| `--task-name` | list[str] | ✓ | Repeat per task label (e.g., `--task-name "1_idea generation"`). |
+| `--percentage` | float | ✓ | PCA percentage (e.g., `0.95`, `0.98`, `0.99`). |
+| `--peaks-only` | flag |  | Use peaks-only logic. |
+| `--min-maps` | int |  | Minimum K. |
+| `--max-maps` | int |  | Maximum K. |
+| `--cluster-method` | str |  | Clustering method (default `kmeans_modified`). |
+| `--n-std` | int |  | Threshold std. |
+| `--n-runs` | int |  | Clustering restarts. |
+| `--max-processes` | int |  | Cap worker processes. |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging configuration. |
+| `--use-gpu` | flag |  | Enable GPU acceleration if available. |
+
+**Example (one-line):**
+
+```bash
+microstate-analysis pca microstate-pipeline individual-run --pca-data-dir storage/pca_output --output-dir storage/pca_microstate_output/individual_run --subjects P01 --subjects P02 --subjects P03 --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --percentage 0.95 --min-maps 2 --max-maps 10 --save-task-map-counts --max-processes 8 --log-dir storage/log/pca_individual_run --log-prefix pca_individual_run
+```
+
+---
+
+### 3) `pca microstate-pipeline across-runs`
+
+Aggregate each subject's **runs/tasks** into **conditions** (per subject), producing `{subject}_pca_across_runs.json` files.
+
+**Key options**
+
+| Option | Type | Required | Description |
+|---|---|---:|:---:|---|
+| `--input-dir` | str | ✓ | Directory containing per-subject `{subject}_pca_individual_maps.json`. |
+| `--output-dir` | str | ✓ | Directory to save `{subject}_pca_across_runs.json`. |
+| `--data-suffix` | str |  | Input suffix (default `_pca_individual_maps.json`). |
+| `--save-suffix` | str |  | Output suffix (default `_pca_across_runs.json`). |
+| `--subjects` | list[str] | ✓ | Repeat per subject. |
+| `--percentage` | float | ✓ | PCA percentage (e.g., `0.95`, `0.98`, `0.99`). |
+| `--n-k` | int |  | Number of microstates used for aggregation. |
+| `--n-k-index` | int |  | Index into `maps_list` to pick per task (e.g., 1 → K=6). |
+| `--n-ch` | int |  | Channel count. |
+| `--condition-dict-json` | str (JSON) | ✓ | Mapping: `{"condition":[task1,task2,...], ...}`. |
+| `--max-processes` | int |  | Cap worker processes. |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging configuration. |
+
+**Example (one-line):**
+
+```bash
+microstate-analysis pca microstate-pipeline across-runs --input-dir storage/pca_microstate_output/individual_run --output-dir storage/pca_microstate_output/across_runs --data-suffix _pca_individual_maps.json --save-suffix _pca_across_runs.json --subjects P01 --subjects P02 --subjects P03 --percentage 0.95 --n-k 6 --n-k-index 1 --n-ch 63 --condition-dict-json '{"idea_generation":["1_idea generation","2_idea generation","3_idea generation"],"idea_evolution":["1_idea evolution","2_idea evolution","3_idea evolution"],"idea_rating":["1_idea rating","2_idea rating","3_idea rating"],"rest":["1_rest","3_rest"]}' --max-processes 3 --log-dir storage/log/pca_across_runs --log-prefix pca_across_runs
+```
+
+---
+
+### 4) `pca microstate-pipeline across-subjects`
+
+Aggregate **per-subject** `_pca_across_runs.json` files into a single `pca_across_subjects.json` (one file with all conditions).
+
+**Key options**
+
+| Option | Type | Required | Description |
+|---|---|---:|:---:|---|
+| `--input-dir` | str | ✓ | Directory of `{subject}_pca_across_runs.json` files. |
+| `--output-dir` | str | ✓ | Directory to save `pca_across_subjects.json`. |
+| `--data-suffix` | str |  | Input suffix (default `_pca_across_runs.json`). |
+| `--save-name` | str |  | Output filename (default `pca_across_subjects.json`). |
+| `--subjects` | list[str] | ✓ | Repeat per subject. |
+| `--condition-names` | list[str] | ✓ | Conditions to include; repeat per condition. |
+| `--percentage` | float | ✓ | PCA percentage (e.g., `0.95`, `0.98`, `0.99`). |
+| `--n-k` | int |  | Microstates for aggregation. |
+| `--n-ch` | int |  | Channel count. |
+| `--max-processes` | int |  | Cap workers. |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging configuration. |
+
+**Example (one-line):**
+
+```bash
+microstate-analysis pca microstate-pipeline across-subjects --input-dir storage/pca_microstate_output/across_runs --output-dir storage/pca_microstate_output/across_subjects --data-suffix _pca_across_runs.json --save-name pca_across_subjects.json --subjects P01 --subjects P02 --subjects P03 --condition-names idea_generation --condition-names idea_evolution --condition-names idea_rating --condition-names rest --percentage 0.95 --n-k 6 --n-ch 63 --max-processes 3 --log-dir storage/log/pca_across_subjects --log-prefix pca_across_subjects
+```
+
+---
+
+### 5) `pca microstate-pipeline across-conditions`
+
+Aggregate **conditions** from `pca_across_subjects.json` into a single `pca_across_conditions.json`.
+
+**Key options**
+
+| Option | Type | Required | Description |
+|---|---|---:|:---:|---|
+| `--input-dir` | str | ✓ | Directory of `pca_across_subjects.json`. |
+| `--input-name` | str |  | File name (default `pca_across_subjects.json`). |
+| `--output-dir` | str | ✓ | Directory to save `pca_across_conditions.json`. |
+| `--output-name` | str |  | Output file name (default `pca_across_conditions.json`). |
+| `--condition-names` | list[str] | ✓ | Repeat per condition. |
+| `--percentage` | float | ✓ | PCA percentage (e.g., `0.95`, `0.98`, `0.99`). |
+| `--n-k` | int |  | Microstates used for aggregation. |
+| `--n-ch` | int |  | Channel count. |
+| `--log-dir`, `--log-prefix`, `--log-suffix` | str |  | Logging configuration. |
+
+**Example (one-line):**
+
+```bash
+microstate-analysis pca microstate-pipeline across-conditions --input-dir storage/pca_microstate_output/across_subjects --input-name pca_across_subjects.json --output-dir storage/pca_microstate_output/across_conditions --output-name pca_across_conditions.json --condition-names idea_generation --condition-names idea_evolution --condition-names idea_rating --condition-names rest --percentage 0.95 --n-k 6 --n-ch 63 --log-dir storage/log/pca_across_conditions --log-prefix pca_across_conditions
+```
+
+---
+
 ## End-to-End Minimal Pipeline (one-liners)
+
+### Standard Pipeline
 
 1. **individual-run** → per subject & task JSONs  
 2. **across-runs** → per subject condition JSONs  
@@ -321,6 +501,45 @@ microstate-analysis metrics parameters-run \
 5. **plot** (optional) → figures + reordered JSONs
 
 (Use the examples in each section; keep parameters consistent.)
+
+### PCA Pipeline
+
+1. **pca gfp** → PCA dimensionality reduction on GFP CSV files  
+2. **pca microstate-pipeline individual-run** → per subject & task JSONs from PCA data  
+3. **pca microstate-pipeline across-runs** → per subject condition JSONs  
+4. **pca microstate-pipeline across-subjects** → single `pca_across_subjects.json`  
+5. **pca microstate-pipeline across-conditions** → single `pca_across_conditions.json`  
+6. **plot** (optional) → figures + reordered JSONs
+
+**Complete PCA Pipeline Example (one-liners):**
+
+### Option A: All-in-One Pipeline (Recommended) ⭐
+
+```bash
+# Step 1: Complete pipeline (GFP peaks + PCA + Microstate clustering)
+microstate-analysis pca microstate-pipeline complete --input-dir storage/clean_data --output-dir storage/pca_microstate_output/individual_run --subjects sub_01 --subjects sub_02 --subjects sub_03 --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --percentage 0.95 --min-maps 2 --max-maps 10 --max-processes 8 --log-dir storage/log/pca_complete --log-prefix pca_complete
+
+# Step 2: Across runs
+microstate-analysis pca microstate-pipeline across-runs --input-dir storage/pca_microstate_output/individual_run --output-dir storage/pca_microstate_output/across_runs --subjects sub_01 --subjects sub_02 --subjects sub_03 --percentage 0.95 --n-k 6 --n-k-index 1 --n-ch 63 --condition-dict-json '{"idea_generation":["1_idea generation","2_idea generation","3_idea generation"],"idea_evolution":["1_idea evolution","2_idea evolution","3_idea evolution"],"idea_rating":["1_idea rating","2_idea rating","3_idea rating"],"rest":["1_rest","3_rest"]}' --max-processes 3 --log-dir storage/log/pca_across_runs --log-prefix pca_across_runs
+
+# Step 3: Across subjects
+microstate-analysis pca microstate-pipeline across-subjects --input-dir storage/pca_microstate_output/across_runs --output-dir storage/pca_microstate_output/across_subjects --subjects sub_01 --subjects sub_02 --subjects sub_03 --condition-names idea_generation --condition-names idea_evolution --condition-names idea_rating --condition-names rest --percentage 0.95 --n-k 6 --n-ch 63 --max-processes 3 --log-dir storage/log/pca_across_subjects --log-prefix pca_across_subjects
+
+# Step 4: Across conditions
+microstate-analysis pca microstate-pipeline across-conditions --input-dir storage/pca_microstate_output/across_subjects --output-dir storage/pca_microstate_output/across_conditions --condition-names idea_generation --condition-names idea_evolution --condition-names idea_rating --condition-names rest --percentage 0.95 --n-k 6 --n-ch 63 --log-dir storage/log/pca_across_conditions --log-prefix pca_across_conditions
+```
+
+### Option B: Step-by-Step Pipeline (Advanced)
+
+```bash
+# Step 1: PCA dimensionality reduction on GFP CSV files
+microstate-analysis pca gfp --input-dir storage/gfp_data/gfp --output-dir storage/pca_output --subjects P01 --subjects P02 --subjects P03 --percentages 0.95 --percentages 0.98 --percentages 0.99 --max-processes 8 --log-dir storage/log/pca_gfp --log-prefix pca_gfp
+
+# Step 2: Individual run (for percentage 0.95)
+microstate-analysis pca microstate-pipeline individual-run --pca-data-dir storage/pca_output --output-dir storage/pca_microstate_output/individual_run --subjects P01 --subjects P02 --subjects P03 --task-name "1_idea generation" --task-name "2_idea generation" --task-name "3_idea generation" --task-name "1_idea evolution" --task-name "2_idea evolution" --task-name "3_idea evolution" --task-name "1_idea rating" --task-name "2_idea rating" --task-name "3_idea rating" --task-name "1_rest" --task-name "3_rest" --percentage 0.95 --min-maps 2 --max-maps 10 --max-processes 8 --log-dir storage/log/pca_individual_run --log-prefix pca_individual_run
+
+# Step 3-5: Same as Option A
+```
 
 ---
 
@@ -354,11 +573,19 @@ ret = proc.wait()
 
 ## Outputs (by stage)
 
+### Standard Pipeline
 - **individual-run**: `storage/microstate_output/individual_run/{subject}_individual_maps.json`
 - **across-runs**: `storage/microstate_output/across_runs/{subject}_across_runs.json`
 - **across-subjects**: `storage/microstate_output/across_subjects/across_subjects.json`
 - **across-conditions**: `storage/microstate_output/across_conditions/across_conditions.json`
 - **plot across-subjects/conditions**: images in `plots/` and reordered JSON at the specified path
+
+### PCA Pipeline
+- **pca gfp**: `storage/pca_output/pca_{percentage}/eigenvalues/{subject}/`, `eigenvectors/{subject}/`, `final_matrix/{subject}/`
+- **pca microstate-pipeline individual-run**: `storage/pca_microstate_output/individual_run/{subject}_pca_individual_maps.json`
+- **pca microstate-pipeline across-runs**: `storage/pca_microstate_output/across_runs/{subject}_pca_across_runs.json`
+- **pca microstate-pipeline across-subjects**: `storage/pca_microstate_output/across_subjects/pca_across_subjects.json`
+- **pca microstate-pipeline across-conditions**: `storage/pca_microstate_output/across_conditions/pca_across_conditions.json`
 
 ---
 
@@ -367,6 +594,8 @@ ret = proc.wait()
 - Add subpackages like `pca_microstate_pipeline/`, `anova/` under `src/microstate_analysis/`.
 - Register new Typer subcommands in `cli.py` (e.g., `app.add_typer(pca_app, name="pca")`).  
 - Keep the stdout JSON Lines contract to ensure GUI compatibility.
+
+**Note**: The PCA microstate pipeline (`pca_microstate_pipeline/`) is now fully integrated and can be used alongside the standard microstate pipeline. Both pipelines follow the same structure and parameter conventions for consistency.
 
 ---
 
