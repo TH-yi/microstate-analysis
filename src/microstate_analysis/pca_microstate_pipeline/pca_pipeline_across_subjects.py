@@ -36,6 +36,7 @@ class PCAPipelineAcrossSubjects(PCAPipelineBase):
         log_dir: Optional[str] = None,
         log_prefix: str = "pca_across_subjects",
         log_suffix: str = "",
+        use_gpu: bool = False,
     ):
         """
         Initialize PCA Across Subjects Pipeline.
@@ -64,6 +65,7 @@ class PCAPipelineAcrossSubjects(PCAPipelineBase):
         self.n_ch = n_ch
         self.data_suffix = data_suffix
         self.save_name = save_name
+        self.use_gpu = use_gpu
 
         # Logger config for safe reconstruction in child processes
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
@@ -90,6 +92,7 @@ class PCAPipelineAcrossSubjects(PCAPipelineBase):
         data_suffix: str,
         n_k: int,
         n_ch: int,
+        use_gpu: bool = False,
     ) -> Dict:
         """
         Process a single condition across all subjects.
@@ -123,7 +126,7 @@ class PCAPipelineAcrossSubjects(PCAPipelineBase):
             }
 
         # Aggregate maps across subjects
-        result = batch_mean_microstate([maps, n_k, n_ch, len(maps)])
+        result = batch_mean_microstate([maps, n_k, n_ch, len(maps), use_gpu])
 
         return {
             'condition': condition_name,
@@ -160,6 +163,7 @@ class PCAPipelineAcrossSubjects(PCAPipelineBase):
                 self.data_suffix,
                 self.n_k,
                 self.n_ch,
+                self.use_gpu,
             )
             for condition_name in self.condition_names
         ]

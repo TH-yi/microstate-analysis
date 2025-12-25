@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from collections import OrderedDict
 from multiprocessing import Pool, cpu_count, get_context
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from scipy import signal
 from sklearn.decomposition import PCA
 
@@ -43,6 +43,8 @@ class PCACompletePipeline(PCAPipelineBase):
         n_runs: int = 100,
         gfp_distance: int = 10,
         gfp_n_std: int = 3,
+        pca_output_dir: Optional[str] = None,
+        save_pca_intermediate: bool = True,
         log_dir: Optional[str] = None,
         log_prefix: str = "pca_complete",
         log_suffix: str = "",
@@ -66,6 +68,8 @@ class PCACompletePipeline(PCAPipelineBase):
             n_runs: Clustering restarts
             gfp_distance: Minimum distance between GFP peaks
             gfp_n_std: Number of standard deviations for GFP peak thresholding
+            pca_output_dir: Optional directory to save PCA intermediate results (eigenvalues, eigenvectors, final_matrix)
+            save_pca_intermediate: Whether to save PCA intermediate results for later use
             log_dir: Optional directory for log files
             log_prefix: Log file prefix
             log_suffix: Log file suffix
@@ -86,6 +90,8 @@ class PCACompletePipeline(PCAPipelineBase):
         self.n_runs = n_runs
         self.gfp_distance = gfp_distance
         self.gfp_n_std = gfp_n_std
+        self.pca_output_dir = pca_output_dir
+        self.save_pca_intermediate = save_pca_intermediate
         self.use_gpu = use_gpu
 
         # Logger config for safe reconstruction in child processes
@@ -127,22 +133,24 @@ class PCACompletePipeline(PCAPipelineBase):
         peaks, _ = signal.find_peaks(gfp, distance=distance, height=(height_low, height_high))
         return peaks, gfp
 
-    @staticmethod
-    def apply_pca(data: np.ndarray, percentage: float):
+    def apply_pca(self, data: np.ndarray, percentage: float, save_path: Optional[str] = None) -> Tuple[np.ndarray, int, PCA]:
         """
         Apply PCA dimensionality reduction.
 
         Args:
             data: 2D numpy array (time, channels)
             percentage: Variance retention ratio
+            save_path: Optional path to save PCA results (without extension)
 
         Returns:
             transformed_data: PCA-transformed data (time, n_components)
             n_components: Number of components retained
+            pca_model: Fitted PCA model
         """
         pca = PCA()
         pca.fit(data)
         eigenvalues = pca.explained_variance_
+        eigenvectors = pca.components_
         explained_variance_ratio = eigenvalues / np.sum(eigenvalues)
         cumulative_explained_variance = np.cumsum(explained_variance_ratio)
         n_components = np.argmax(cumulative_explained_variance >= percentage) + 1
@@ -154,7 +162,61 @@ class PCACompletePipeline(PCAPipelineBase):
         pca_reduced = PCA(n_components=n_components)
         transformed_data = pca_reduced.fit_transform(data)
 
-        return transformed_data, n_components
+        # Save intermediate results if requested
+        if save_path and self.save_pca_intermediate:
+            percentage_str = f"{int(percentage * 100)}"
+            try:
+                # Extract base directory and filename from save_path
+                save_dir = os.path.dirname(save_path)
+                save_filename = os.path.basename(save_path)
+                
+                # Get parent directories for eigenvalues and eigenvectors
+                final_matrix_dir = save_dir
+                eigenvalues_dir = final_matrix_dir.replace("final_matrix", "eigenvalues")
+                eigenvectors_dir = final_matrix_dir.replace("final_matrix", "eigenvectors")
+                
+                # Ensure directories exist
+                os.makedirs(eigenvalues_dir, exist_ok=True)
+                os.makedirs(eigenvectors_dir, exist_ok=True)
+                
+                # Save eigenvalues
+                eigenvalues_df = pd.DataFrame(eigenvalues[:n_components], columns=['Eigenvalue'])
+                eigenvalues_path = os.path.join(
+                    eigenvalues_dir,
+                    f"{save_filename}_reduced_eigenvalues_gfp_pca{percentage_str}.csv"
+                )
+                eigenvalues_df.to_csv(eigenvalues_path, index=False)
+
+                # Save eigenvectors
+                eigenvectors_df = pd.DataFrame(
+                    eigenvectors[:n_components],
+                    columns=[f'Eigenvector_{i + 1}' for i in range(eigenvectors.shape[1])]
+                )
+                eigenvectors_path = os.path.join(
+                    eigenvectors_dir,
+                    f"{save_filename}_reduced_eigenvectors_gfp_pca{percentage_str}.csv"
+                )
+                eigenvectors_df.to_csv(eigenvectors_path, index=False)
+
+                # Save final matrix (PCA-transformed data)
+                # Add index column (original time point indices from peaks)
+                final_matrix_df = pd.DataFrame(
+                    transformed_data,
+                    columns=[f'PC{i + 1}' for i in range(n_components)]
+                )
+                # Add index starting from 1
+                final_matrix_df.index = final_matrix_df.index + 1
+                final_matrix_path = os.path.join(
+                    final_matrix_dir,
+                    f"{save_filename}_final_matrix_gfp_pca{percentage_str}.csv"
+                )
+                final_matrix_df.to_csv(final_matrix_path, index=True)
+            except Exception as e:
+                self.logger.log_warning(f"Failed to save PCA intermediate results to {save_path}: {e}")
+                import traceback
+                self.logger.log_warning(traceback.format_exc())
+
+        return transformed_data, n_components, pca
 
     def process_subject(self, subject: str) -> dict:
         """
@@ -212,11 +274,40 @@ class PCACompletePipeline(PCAPipelineBase):
                 )
 
                 # Step 3: Apply PCA dimensionality reduction
-                pca_data, n_components = self.apply_pca(peaks_data, self.percentage)
+                # Prepare save path for intermediate results
+                save_path = None
+                if self.save_pca_intermediate:
+                    if self.pca_output_dir:
+                        pca_base_dir = self.pca_output_dir
+                    else:
+                        # Use default structure: output_dir/../pca_output
+                        pca_base_dir = os.path.join(os.path.dirname(self.output_dir), "pca_output")
+                    
+                    percentage_str = f"{int(self.percentage * 100)}"
+                    final_matrix_dir = os.path.join(
+                        pca_base_dir, f"pca_{percentage_str}", "final_matrix", subject
+                    )
+                    os.makedirs(final_matrix_dir, exist_ok=True)
+                    
+                    # Create filename from task name (replace spaces with underscores)
+                    # Format should match: {subject}_{task}_gfp_final_matrix_gfp_pca{percentage}.csv
+                    # This matches the prototype format and is searchable by individual-run
+                    task_filename = task.replace(" ", "_")
+                    # Include subject in filename to match prototype format
+                    full_filename = f"{subject}_{task_filename}_gfp_final_matrix_gfp_pca{percentage_str}"
+                    save_path = os.path.join(final_matrix_dir, full_filename)
+
+                pca_data, n_components, pca_model = self.apply_pca(
+                    peaks_data, self.percentage, save_path=save_path
+                )
                 self.logger.log_info(
                     f"{subject}/{task}: PCA reduction: {peaks_data.shape[1]} → {n_components} components "
                     f"({self.percentage*100:.0f}% variance)"
                 )
+                if save_path:
+                    self.logger.log_info(
+                        f"{subject}/{task}: PCA intermediate results saved to {save_path}_*.csv"
+                    )
 
                 # Step 4: Transpose for microstate clustering (channels, time)
                 # Microstate expects (channels, time) format

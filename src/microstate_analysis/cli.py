@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import math
+import os
 import typer
 from typing import List, Optional
 from microstate_analysis.microstate_pipeline.pipeline_individual_run import PipelineIndividualRun
@@ -17,7 +18,6 @@ from microstate_analysis.pca_microstate_pipeline.pca_pipeline_individual_run imp
 from microstate_analysis.pca_microstate_pipeline.pca_pipeline_across_runs import PCAPipelineAcrossRuns
 from microstate_analysis.pca_microstate_pipeline.pca_pipeline_across_subjects import PCAPipelineAcrossSubjects
 from microstate_analysis.pca_microstate_pipeline.pca_pipeline_across_conditions import PCAPipelineAcrossConditions
-from microstate_analysis.pca_microstate_pipeline.pca_pipeline_complete import PCACompletePipeline
 
 app = typer.Typer(help="Microstate Analysis CLI")
 
@@ -28,6 +28,83 @@ class GlobalState:
 
 
 state = GlobalState()
+
+
+def _fix_powershell_json(json_str: str) -> str:
+    """
+    Fix JSON string where PowerShell removed double quotes.
+    Restores double quotes around keys and string values in arrays.
+    """
+    import re
+    
+    # Step 1: Fix keys - add quotes around unquoted keys before colons
+    # Pattern: {key: or ,key: where key is word characters/underscores
+    fixed = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)', r'\1"\2"\3', json_str)
+    
+    # Step 2: Fix array string values - process arrays character by character
+    # This handles nested structures correctly
+    result = []
+    i = 0
+    while i < len(fixed):
+        if fixed[i] == '[':
+            # Start of array - find matching closing bracket
+            result.append('[')
+            i += 1
+            array_start = i
+            depth = 1
+            while i < len(fixed) and depth > 0:
+                if fixed[i] == '[':
+                    depth += 1
+                elif fixed[i] == ']':
+                    depth -= 1
+                i += 1
+            # Extract array content (without the closing bracket)
+            array_content = fixed[array_start:i-1]
+            # Split array elements by comma at top level only
+            elements = []
+            current_elem = ""
+            elem_depth = 0
+            for char in array_content:
+                if char == '[':
+                    elem_depth += 1
+                    current_elem += char
+                elif char == ']':
+                    elem_depth -= 1
+                    current_elem += char
+                elif char == '{':
+                    elem_depth += 1
+                    current_elem += char
+                elif char == '}':
+                    elem_depth -= 1
+                    current_elem += char
+                elif char == ',' and elem_depth == 0:
+                    # Top-level comma
+                    elem = current_elem.strip()
+                    if elem:
+                        # Quote if it's a string (not number, not already quoted, not nested)
+                        if not elem.startswith('"') and not elem.startswith('[') and not elem.startswith('{') and not elem.replace('.', '').replace('-', '').isdigit() and elem.lower() not in ['true', 'false', 'null']:
+                            elements.append(f'"{elem}"')
+                        else:
+                            elements.append(elem)
+                    current_elem = ""
+                else:
+                    current_elem += char
+            # Handle last element
+            if current_elem.strip():
+                elem = current_elem.strip()
+                if not elem.startswith('"') and not elem.startswith('[') and not elem.startswith('{') and not elem.replace('.', '').replace('-', '').isdigit() and elem.lower() not in ['true', 'false', 'null']:
+                    elements.append(f'"{elem}"')
+                else:
+                    elements.append(elem)
+            result.append(','.join(elements))
+            result.append(']')
+        else:
+            result.append(fixed[i])
+            i += 1
+    
+    fixed = ''.join(result)
+    
+    return fixed
 
 
 def version_callback(value: bool):
@@ -108,12 +185,36 @@ def cli_across_runs(
         log_prefix: str = typer.Option("across_runs", help="Log filename prefix."),
         log_suffix: str = typer.Option("", help="Log filename suffix."),
         # condition dict as JSON string for CLI
-        condition_dict_json: str = typer.Option(..., help='JSON string mapping condition -> list of tasks.'),
+        condition_dict_json: str = typer.Option(..., help='JSON string mapping condition -> list of tasks. Can also be a path to a JSON file. In PowerShell, use a JSON file for best results.'),
         max_processes: Optional[int] = typer.Option(None, help="Max worker processes (default=min(CPU, #subjects))."),
         use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     try:
-        condition_dict = json.loads(condition_dict_json)
+        # Try to parse JSON, with better error handling
+        # Also check if it's a file path
+        if os.path.exists(condition_dict_json):
+            try:
+                with open(condition_dict_json, 'r', encoding='utf-8') as f:
+                    condition_dict = json.load(f)
+            except Exception as e:
+                typer.echo(f"[ERROR] Failed to read JSON file {condition_dict_json}: {e}", err=True)
+                raise
+        else:
+            try:
+                condition_dict = json.loads(condition_dict_json)
+            except json.JSONDecodeError as e:
+                # Try to fix PowerShell-removed quotes
+                try:
+                    fixed_json = _fix_powershell_json(condition_dict_json)
+                    condition_dict = json.loads(fixed_json)
+                except Exception:
+                    typer.echo(f"[ERROR] Invalid JSON format in --condition-dict-json: {e}", err=True)
+                    typer.echo(f"[ERROR] Received string: {repr(condition_dict_json)}", err=True)
+                    typer.echo("[HINT] In PowerShell, try using a JSON file:", err=True)
+                    typer.echo("[HINT]   1. Create condition_dict.json with your JSON", err=True)
+                    typer.echo("[HINT]   2. Use: --condition-dict-json condition_dict.json", err=True)
+                    typer.echo("[HINT] Or wrap variable in quotes: --condition-dict-json \"$conditionJson\"", err=True)
+                    raise
         job = PipelineAcrossRuns(
             input_dir=input_dir,
             output_dir=output_dir,
@@ -386,7 +487,12 @@ def cli_metrics_gev_sum(
     Compute weighted GEV stats per condition using CSV data and microstate maps.
     """
     try:
-        condition_dict = json.loads(condition_dict_json)
+        try:
+            condition_dict = json.loads(condition_dict_json)
+        except json.JSONDecodeError:
+            # Try to fix PowerShell-removed quotes
+            fixed_json = _fix_powershell_json(condition_dict_json)
+            condition_dict = json.loads(fixed_json)
 
         job = GEVSumCalc(
             log_dir=log_dir,
@@ -431,7 +537,15 @@ def cli_cluster_quality(
     Provide either `conditions` OR a richer `condition_dict_json`.
     """
     try:
-        cond_dict = json.loads(condition_dict_json) if condition_dict_json else None
+        if condition_dict_json:
+            try:
+                cond_dict = json.loads(condition_dict_json)
+            except json.JSONDecodeError:
+                # Try to fix PowerShell-removed quotes
+                fixed_json = _fix_powershell_json(condition_dict_json)
+                cond_dict = json.loads(fixed_json)
+        else:
+            cond_dict = None
 
         from microstate_analysis.microstate_quality.cluster_quality_analysis import (
             ClusterQualityAnalysis,
@@ -505,59 +619,6 @@ pca_app.add_typer(pca_pipeline_app, name="microstate-pipeline")
 
 @pca_pipeline_app.command("individual-run")
 def cli_pca_individual_run(
-    pca_data_dir: str = typer.Option(..., help="Base directory containing PCA final_matrix data (structure: {pca_data_dir}/pca_{percentage}/final_matrix/{subject}/*.csv)."),
-    output_dir: str = typer.Option(..., help="Directory to save {subject}_pca_individual_maps.json"),
-    subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g., P01 P02 ..."),
-    task_name: List[str] = typer.Option(..., help="Task names, e.g., '1_idea generation' '2_idea generation' ..."),
-    percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
-    peaks_only: bool = typer.Option(False, help="Use peaks-only logic."),
-    min_maps: int = typer.Option(2, help="Minimum number of maps."),
-    max_maps: int = typer.Option(10, help="Maximum number of maps."),
-    opt_k: Optional[int] = typer.Option(None, help="Optional fixed K value."),
-    cluster_method: str = typer.Option("kmeans_modified", help="Clustering method."),
-    n_std: int = typer.Option(3, help="Threshold std."),
-    n_runs: int = typer.Option(100, help="Clustering restarts."),
-    save_task_map_counts: bool = typer.Option(True, help="Save per-task opt_k list across subjects."),
-    max_processes: Optional[int] = typer.Option(None, help="Cap worker processes."),
-    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
-    log_prefix: str = typer.Option("pca_individual_run", help="Log filename prefix."),
-    log_suffix: str = typer.Option("", help="Log filename suffix."),
-    use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
-):
-    """
-    Compute PCA microstate results for each subject × task from PCA-transformed CSV files.
-    """
-    try:
-        job = PCAPipelineIndividualRun(
-            pca_data_dir=pca_data_dir,
-            output_dir=output_dir,
-            subjects=subjects,
-            task_names=task_name,
-            percentage=percentage,
-            peaks_only=peaks_only,
-            min_maps=min_maps,
-            max_maps=max_maps,
-            opt_k=opt_k,
-            cluster_method=cluster_method,
-            n_std=n_std,
-            n_runs=n_runs,
-            log_dir=log_dir,
-            log_prefix=log_prefix,
-            log_suffix=log_suffix,
-            use_gpu=use_gpu,
-        )
-        job.logger.log_info("[CLI] pca microstate-pipeline individual-run started")
-        job.generate_individual_eeg_maps(
-            max_processes=max_processes,
-            save_task_map_counts=save_task_map_counts,
-        )
-        job.logger.log_info("[CLI] pca microstate-pipeline individual-run finished")
-    except Exception as e:
-        typer.echo(f"[ERROR] {e}", err=True)
-
-
-@pca_pipeline_app.command("complete")
-def cli_pca_complete(
     input_dir: str = typer.Option(..., help="Directory containing raw per-subject JSON files (e.g., sub_01.json)."),
     output_dir: str = typer.Option(..., help="Directory to save {subject}_pca_individual_maps.json"),
     subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g., sub_01 sub_02 ..."),
@@ -572,10 +633,12 @@ def cli_pca_complete(
     n_runs: int = typer.Option(100, help="Clustering restarts."),
     gfp_distance: int = typer.Option(10, help="Minimum distance between GFP peaks."),
     gfp_n_std: int = typer.Option(3, help="Number of standard deviations for GFP peak thresholding."),
+    pca_output_dir: Optional[str] = typer.Option(None, help="Directory to save PCA intermediate results (eigenvalues, eigenvectors, final_matrix). If omitted, uses output_dir/../pca_output."),
+    save_pca_intermediate: bool = typer.Option(True, help="Save PCA intermediate results."),
     save_task_map_counts: bool = typer.Option(True, help="Save per-task opt_k list across subjects."),
     max_processes: Optional[int] = typer.Option(None, help="Cap worker processes."),
     log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
-    log_prefix: str = typer.Option("pca_complete", help="Log filename prefix."),
+    log_prefix: str = typer.Option("pca_individual_run", help="Log filename prefix."),
     log_suffix: str = typer.Option("", help="Log filename suffix."),
     use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
@@ -584,7 +647,7 @@ def cli_pca_complete(
     All-in-one pipeline that processes raw subject JSON files end-to-end.
     """
     try:
-        job = PCACompletePipeline(
+        job = PCAPipelineIndividualRun(
             input_dir=input_dir,
             output_dir=output_dir,
             subjects=subjects,
@@ -599,17 +662,19 @@ def cli_pca_complete(
             n_runs=n_runs,
             gfp_distance=gfp_distance,
             gfp_n_std=gfp_n_std,
+            pca_output_dir=pca_output_dir,
+            save_pca_intermediate=save_pca_intermediate,
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
             use_gpu=use_gpu,
         )
-        job.logger.log_info("[CLI] pca microstate-pipeline complete started")
-        job.generate_individual_eeg_maps(
+        job.logger.log_info("[CLI] pca microstate-pipeline individual-run started")
+        job.run(
             max_processes=max_processes,
             save_task_map_counts=save_task_map_counts,
         )
-        job.logger.log_info("[CLI] pca microstate-pipeline complete finished")
+        job.logger.log_info("[CLI] pca microstate-pipeline individual-run finished")
     except Exception as e:
         typer.echo(f"[ERROR] {e}", err=True)
 
@@ -618,24 +683,50 @@ def cli_pca_complete(
 def cli_pca_across_runs(
     input_dir: str = typer.Option(..., help="Directory of per-subject individual maps JSONs."),
     output_dir: str = typer.Option(..., help="Output dir for across-runs JSONs."),
-    data_suffix: str = typer.Option("_pca_individual_maps.json", help="Input filename suffix."),
-    save_suffix: str = typer.Option("_pca_across_runs.json", help="Output filename suffix."),
-    subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g., P01 P02 ..."),
+    data_suffix: str = typer.Option("_pca_individual_maps.json", help="Input filename suffix (subject + suffix)."),
+    save_suffix: str = typer.Option("_pca_across_runs.json", help="Output filename suffix (subject + suffix)."),
+    subjects: List[str] = typer.Option(..., help="List of subject IDs, e.g. P01 P02 ..."),
     percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
     n_k: int = typer.Option(6, help="Number of microstates."),
     n_k_index: int = typer.Option(1, help="Index into maps_list for each task/run."),
     n_ch: int = typer.Option(63, help="Number of EEG channels."),
-    condition_dict_json: str = typer.Option(..., help='JSON string mapping condition -> list of tasks.'),
-    max_processes: Optional[int] = typer.Option(None, help="Max worker processes."),
-    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
+    log_dir: Optional[str] = typer.Option(None,
+                                          help="Directory to write logs. If omitted, logs go to stderr only."),
     log_prefix: str = typer.Option("pca_across_runs", help="Log filename prefix."),
     log_suffix: str = typer.Option("", help="Log filename suffix."),
+    condition_dict_json: str = typer.Option(..., help='JSON string mapping condition -> list of tasks. Can also be a path to a JSON file. In PowerShell, use a JSON file for best results.'),
+    max_processes: Optional[int] = typer.Option(None, help="Max worker processes (default=min(CPU, #subjects))."),
+    use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     """
     Aggregate each subject's runs/tasks into conditions (per subject).
     """
     try:
-        condition_dict = json.loads(condition_dict_json)
+        # Try to parse JSON, with better error handling
+        # Also check if it's a file path
+        if os.path.exists(condition_dict_json):
+            try:
+                with open(condition_dict_json, 'r', encoding='utf-8') as f:
+                    condition_dict = json.load(f)
+            except Exception as e:
+                typer.echo(f"[ERROR] Failed to read JSON file {condition_dict_json}: {e}", err=True)
+                raise
+        else:
+            try:
+                condition_dict = json.loads(condition_dict_json)
+            except json.JSONDecodeError as e:
+                # Try to fix PowerShell-removed quotes
+                try:
+                    fixed_json = _fix_powershell_json(condition_dict_json)
+                    condition_dict = json.loads(fixed_json)
+                except Exception:
+                    typer.echo(f"[ERROR] Invalid JSON format in --condition-dict-json: {e}", err=True)
+                    typer.echo(f"[ERROR] Received string: {repr(condition_dict_json)}", err=True)
+                    typer.echo("[HINT] In PowerShell, try using a JSON file:", err=True)
+                    typer.echo("[HINT]   1. Create condition_dict.json with your JSON", err=True)
+                    typer.echo("[HINT]   2. Use: --condition-dict-json condition_dict.json", err=True)
+                    typer.echo("[HINT] Or wrap variable in quotes: --condition-dict-json \"$conditionJson\"", err=True)
+                    raise
         job = PCAPipelineAcrossRuns(
             input_dir=input_dir,
             output_dir=output_dir,
@@ -650,6 +741,7 @@ def cli_pca_across_runs(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            use_gpu=use_gpu,
         )
         job.logger.log_info("[CLI] pca microstate-pipeline across-runs started")
         job.run(max_processes=max_processes)
@@ -665,14 +757,16 @@ def cli_pca_across_subjects(
     data_suffix: str = typer.Option("_pca_across_runs.json", help="Input filename suffix."),
     save_name: str = typer.Option("pca_across_subjects.json", help="Output filename."),
     subjects: List[str] = typer.Option(..., help="Subjects list."),
-    condition_names: List[str] = typer.Option(..., help="Conditions."),
+    condition_names: List[str] = typer.Option(["idea_generation", "idea_evolution", "idea_rating", "rest"],
+                                              help="Conditions."),
     percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
-    n_k: int = typer.Option(6, help="Number of microstates."),
-    n_ch: int = typer.Option(63, help="Number of channels."),
-    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
-    log_prefix: str = typer.Option("pca_across_subjects", help="Log filename prefix."),
-    log_suffix: str = typer.Option("", help="Log filename suffix."),
-    max_processes: Optional[int] = typer.Option(None, help="Max worker processes."),
+    n_k: int = typer.Option(6),
+    n_ch: int = typer.Option(63),
+    log_dir: Optional[str] = typer.Option(None),
+    log_prefix: str = typer.Option("pca_across_subjects"),
+    log_suffix: str = typer.Option(""),
+    max_processes: Optional[int] = typer.Option(None),
+    use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     """
     Aggregate per-subject across-runs maps into condition-level maps.
@@ -691,6 +785,7 @@ def cli_pca_across_subjects(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            use_gpu=use_gpu,
         )
         job.logger.log_info("[CLI] pca microstate-pipeline across-subjects started")
         job.run(max_processes=max_processes)
@@ -702,16 +797,17 @@ def cli_pca_across_subjects(
 @pca_pipeline_app.command("across-conditions")
 def cli_pca_across_conditions(
     input_dir: str = typer.Option(..., help="Dir of across-subjects JSON."),
-    input_name: str = typer.Option("pca_across_subjects.json", help="Input filename."),
+    input_name: str = typer.Option("pca_across_subjects.json"),
     output_dir: str = typer.Option(..., help="Dir to save across-conditions JSON."),
-    output_name: str = typer.Option("pca_across_conditions.json", help="Output filename."),
-    condition_names: List[str] = typer.Option(..., help="Conditions."),
+    output_name: str = typer.Option("pca_across_conditions.json"),
+    condition_names: List[str] = typer.Option(["idea_generation", "idea_evolution", "idea_rating", "rest"]),
     percentage: float = typer.Option(..., help="PCA percentage (e.g., 0.95, 0.98, 0.99)."),
-    n_k: int = typer.Option(6, help="Number of microstates."),
-    n_ch: int = typer.Option(63, help="Number of channels."),
-    log_dir: Optional[str] = typer.Option(None, help="Directory to write logs."),
-    log_prefix: str = typer.Option("pca_across_conditions", help="Log filename prefix."),
-    log_suffix: str = typer.Option("", help="Log filename suffix."),
+    n_k: int = typer.Option(6),
+    n_ch: int = typer.Option(63),
+    log_dir: Optional[str] = typer.Option(None),
+    log_prefix: str = typer.Option("pca_across_conditions"),
+    log_suffix: str = typer.Option(""),
+    use_gpu: bool = typer.Option(False, help="Enable GPU acceleration if available."),
 ):
     """
     Aggregate conditions into global microstate maps.
@@ -729,6 +825,7 @@ def cli_pca_across_conditions(
             log_dir=log_dir,
             log_prefix=log_prefix,
             log_suffix=log_suffix,
+            use_gpu=use_gpu,
         )
         job.logger.log_info("[CLI] pca microstate-pipeline across-conditions started")
         job.run()

@@ -38,6 +38,7 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
         log_dir: Optional[str] = None,
         log_prefix: str = "pca_across_runs",
         log_suffix: str = "",
+        use_gpu: bool = False,
     ):
         """
         Initialize PCA Across Runs Pipeline.
@@ -69,6 +70,7 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
         self.n_ch = n_ch
         self.data_suffix = data_suffix
         self.save_suffix = save_suffix
+        self.use_gpu = use_gpu
 
         # Logger config for safe reconstruction in child processes
         self._logger_cfg = dict(log_dir=log_dir, prefix=log_prefix or "", suffix=log_suffix or "")
@@ -99,6 +101,7 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
         n_ch: int,
         data_suffix: str,
         save_suffix: str,
+        use_gpu: bool = False,
     ) -> str:
         """
         Process a single subject's across-runs aggregation.
@@ -144,7 +147,7 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
                             maps.append(maps_list[opt_k_index])
 
             if maps:
-                condition_res.append(batch_mean_microstate([maps, n_k, n_ch, len(maps)]))
+                condition_res.append(batch_mean_microstate([maps, n_k, n_ch, len(maps), use_gpu]))
 
         # Build result dictionary
         for idx, condition_name in enumerate(condition_names):
@@ -193,6 +196,7 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
                 self.n_ch,
                 self.data_suffix,
                 self.save_suffix,
+                self.use_gpu,
             )
             for subject in self.subjects
         ]

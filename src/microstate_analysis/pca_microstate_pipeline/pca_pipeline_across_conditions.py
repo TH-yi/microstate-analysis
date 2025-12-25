@@ -34,6 +34,7 @@ class PCAPipelineAcrossConditions(PCAPipelineBase):
         log_dir: Optional[str] = None,
         log_prefix: str = "pca_across_conditions",
         log_suffix: str = "",
+        use_gpu: bool = False,
     ):
         """
         Initialize PCA Across Conditions Pipeline.
@@ -60,6 +61,7 @@ class PCAPipelineAcrossConditions(PCAPipelineBase):
         self.percentage = percentage
         self.n_k = n_k
         self.n_ch = n_ch
+        self.use_gpu = use_gpu
 
         self.logger = DualHandler(log_dir=log_dir, prefix=log_prefix, suffix=log_suffix)
 
@@ -94,7 +96,7 @@ class PCAPipelineAcrossConditions(PCAPipelineBase):
             return
 
         # Aggregate maps across conditions
-        microstate = MeanMicrostate(maps, self.n_k, self.n_ch, len(maps))
+        microstate = MeanMicrostate(maps, self.n_k, self.n_ch, len(maps), use_gpu=self.use_gpu)
         temp = microstate.mean_microstates()
 
         res = {
