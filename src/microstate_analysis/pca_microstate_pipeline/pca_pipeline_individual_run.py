@@ -18,7 +18,7 @@ from sklearn.decomposition import PCA
 from microstate_analysis.pca_microstate_pipeline.pca_pipeline_base import PCAPipelineBase
 from microstate_analysis.logger.dualhandler import DualHandler
 from microstate_analysis.microstate_base.data_handler import list_to_matrix
-from microstate_analysis.microstate_base.microstate_batch_handler import batch_microstate
+from microstate_analysis.microstate_base.microstate_batch_handler import batch_microstate_pca_individual_run
 
 
 class PCAPipelineIndividualRun(PCAPipelineBase):
@@ -77,7 +77,7 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
         """
         super().__init__()
         self.input_dir = input_dir
-        self.output_dir = output_dir
+        self.output_dir = os.path.join(output_dir, f"pca_{int(percentage*100)}")
         self.subjects = subjects
         self.task_names = task_names
         self.percentage = percentage
@@ -134,7 +134,7 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
         peaks, _ = signal.find_peaks(gfp, distance=distance, height=(height_low, height_high))
         return peaks, gfp
 
-    def apply_pca(self, data: np.ndarray, percentage: float, save_path: Optional[str] = None) -> Tuple[np.ndarray, int, PCA]:
+    def apply_pca(self, data: np.ndarray, percentage: float, save_path: Optional[str] = None) -> Tuple[np.ndarray, int, np.ndarray]:
         """
         Apply PCA dimensionality reduction.
 
@@ -146,7 +146,7 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
         Returns:
             transformed_data: PCA-transformed data (time, n_components)
             n_components: Number of components retained
-            pca_model: Fitted PCA model
+            reduced_eigenvectors: Reduced eigenvectors (n_components, n_channels) for reconstruction
         """
         pca = PCA()
         pca.fit(data)
@@ -158,6 +158,9 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
 
         if n_components == 0:
             n_components = len(eigenvalues)
+
+        # Get reduced eigenvectors (n_components, n_channels)
+        reduced_eigenvectors = eigenvectors[:n_components]
 
         # Transform data
         pca_reduced = PCA(n_components=n_components)
@@ -190,7 +193,7 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
 
                 # Save eigenvectors
                 eigenvectors_df = pd.DataFrame(
-                    eigenvectors[:n_components],
+                    reduced_eigenvectors,
                     columns=[f'Eigenvector_{i + 1}' for i in range(eigenvectors.shape[1])]
                 )
                 eigenvectors_path = os.path.join(
@@ -216,7 +219,8 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
                 import traceback
                 self.logger.log_warning(traceback.format_exc())
 
-        return transformed_data, n_components, pca
+        return transformed_data, n_components, reduced_eigenvectors
+
 
     def process_subject(self, subject: str) -> dict:
         """
@@ -295,7 +299,7 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
                     full_filename = f"{subject}_{task_filename}_gfp_final_matrix_gfp_pca{percentage_str}"
                     save_path = os.path.join(final_matrix_dir, full_filename)
 
-                pca_data, n_components, pca_model = self.apply_pca(
+                pca_data, n_components, reduced_eigenvectors = self.apply_pca(
                     peaks_data, self.percentage, save_path=save_path
                 )
                 self.logger.log_info(
@@ -313,6 +317,15 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
                 microstate_data = np.ascontiguousarray(microstate_data, dtype=np.float64)
 
                 # Step 5: Run microstate clustering
+                original_n_channels = peaks_data.shape[1]
+                original_data = peaks_data
+                reconstruct_pca_maps_info = {
+                    "reduced_eigenvectors": reduced_eigenvectors,
+                    "original_n_channels": original_n_channels,
+                    "original_data": original_data,
+                    "subject": subject,
+                    "task": task
+                }
                 batch_params = [
                     microstate_data,
                     self.peaks_only,
@@ -323,18 +336,26 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
                     self.n_std,
                     self.n_runs,
                     self.use_gpu,
+                    reconstruct_pca_maps_info
                 ]
-                task_microstate = batch_microstate(batch_params)
+                task_microstate = batch_microstate_pca_individual_run(batch_params)
+
+                self.logger.log_info(
+                    f"{subject}/{task}: Reconstructed maps from {n_components}D to {original_n_channels}D"
+                )
 
                 res[task] = {
                     'cv_list': task_microstate.cv_list,
                     'gev_list': task_microstate.gev_list,
-                    'maps_list': task_microstate.maps_list,
+                    'maps_list': task_microstate.maps_list,  # Maps in reduced PCA space
+                    'maps_list_original_dim': task_microstate.maps_list_original_dim,  # Maps reconstructed to original dim
+                    'label_list_original_dim_maps': task_microstate.label_list_original_dim,
                     'opt_k': task_microstate.opt_k,
                     'opt_k_index': int(task_microstate.opt_k_index),
                     'min_maps': self.min_maps,
                     'max_maps': self.max_maps,
                     'pca_n_components': int(n_components),
+                    'original_n_channels': int(original_n_channels),
                 }
                 subj_maps_counts[task] = task_microstate.opt_k
                 self.logger.log_info(
@@ -349,7 +370,7 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
         # Save results
         output_file = f'{subject}_pca_individual_maps.json'
         self.dump_to_json(res, self.output_dir, output_file.replace('.json', ''))
-
+        self.logger.log_info(f'Successfully saved {output_file} to {self.output_dir}')
         return subj_maps_counts
 
     def run(self, max_processes: Optional[int] = None, save_task_map_counts: bool = True):

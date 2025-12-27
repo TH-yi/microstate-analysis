@@ -19,7 +19,11 @@ except Exception as e:
 
 
 class Microstate:
-    def __init__(self, data, use_gpu: bool = False):
+    def __init__(self, data, use_gpu: bool = False, reconstruct_pca_maps_info = None):
+        # reconstruct pca maps info only for pca_individual_run reconstruct original dimensions maps
+        self.reconstruct_pca_maps_info = reconstruct_pca_maps_info
+        self.maps_list_original_dim = [] # serve for pca_individual_run
+        self.label_list_original_dim = [] # serve for pca_individual_run
         # GPU delegation setup
         self._use_gpu = bool(use_gpu and _MS_GPU_AVAILABLE)
         if self._use_gpu:
@@ -389,65 +393,72 @@ class Microstate:
         self.peaks = peaks
         self.gfp = gfp
 
-    def kmeans_modified(self, data, data_std, n_runs=10, n_maps=4, maxerr=1e-6, maxiter=1000, polarity=False):
+    def kmeans_modified(self, data, data_std, n_runs=100, n_maps=4, maxerr=1e-6, maxiter=1000, polarity=False):
 
         # GPU delegation when available
         if getattr(self, "_gpu", None) is not None:
             cv, gev, maps, label = self._gpu.kmeans_modified(
                 data=data, data_std=self._gpu.xp.asarray(data_std) if hasattr(self._gpu, "xp") else data_std,
                 n_runs=n_runs, n_maps=n_maps, maxerr=maxerr, maxiter=maxiter, polarity=polarity)
-            return cv, gev, maps, label
-        n_gfp = data_std.shape[0]
-        cv_list = []
-        gev_list = []
-        maps_list = []
-        label_list = []
-        for run in range(n_runs):
-            # if run == 0 or run == n_runs - 1:
-            #     print(f"{run + 1}/{n_runs}")
-            rndi = np.random.permutation(n_gfp)[:n_maps]
-            maps = Microstate.normalization(data[rndi, :], axis=1)
-            n_iter = 0
-            var0 = 1.0
-            var1 = 0.0
-            while ((np.abs(var0 - var1) / var0 > maxerr) & (n_iter < maxiter)):
-                n_iter += 1
+        else:
+            n_gfp = data_std.shape[0]
+            cv_list = []
+            gev_list = []
+            maps_list = []
+            label_list = []
+            for run in range(n_runs):
+                # if run == 0 or run == n_runs - 1:
+                #     print(f"{run + 1}/{n_runs}")
+                rndi = np.random.permutation(n_gfp)[:n_maps]
+                maps = Microstate.normalization(data[rndi, :], axis=1)
+                n_iter = 0
+                var0 = 1.0
+                var1 = 0.0
+                while ((np.abs(var0 - var1) / var0 > maxerr) & (n_iter < maxiter)):
+                    n_iter += 1
 
-                label = np.argmax(np.dot(data, maps.T) ** 2, axis=1)
-                for k in range(n_maps):
-                    data_k = data[label == k, :]
-                    maps[k, :] = Microstate.max_evec(data_k, 0)
-                var1 = var0
-                var0 = Microstate.orthogonal_dist(data, maps[label, :])
-                var0 /= (n_gfp * (self.n_ch - 1))
+                    label = np.argmax(np.dot(data, maps.T) ** 2, axis=1)
+                    for k in range(n_maps):
+                        data_k = data[label == k, :]
+                        maps[k, :] = Microstate.max_evec(data_k, 0)
+                    var1 = var0
+                    var0 = Microstate.orthogonal_dist(data, maps[label, :])
+                    var0 /= (n_gfp * (self.n_ch - 1))
 
-            label, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
-            cv_list.append(cv)
-            gev_list.append(gev)
-            maps_list.append(maps)
-            label_list.append(label)
+                label, cv, gev = self.optimize_k(maps=maps, data=data, data_std=data_std, polarity=polarity)
+                cv_list.append(cv)
+                gev_list.append(gev)
+                maps_list.append(maps)
+                label_list.append(label)
             opt = Microstate.opt_microstate_criteria(cv_list)
-        return cv_list[opt], gev_list[opt], maps_list[opt], label_list[opt]
+            cv, gev, maps, label = cv_list[opt], gev_list[opt], maps_list[opt], label_list[opt]
+        if self.reconstruct_pca_maps_info is None:
+            return cv, gev, maps, label
+        else:
+            # serve for pca maps reconstruction and cv/gev recalculate
+            # Reconstruct maps to original dimension (63/64 channels)
+            # task_microstate.maps_list contains maps in reduced PCA space
+            # Each element in maps_list is a list of maps for a specific K value
+            original_data = zero_mean(self.reconstruct_pca_maps_info['original_data'])  # Original number of channels (typically 63/64)
+            self.n_ch = original_data.shape[1]
+            reduced_eigenvectors = self.reconstruct_pca_maps_info['reduced_eigenvectors']
+
+
+            # Convert to numpy array: (n_maps, n_components)
+            maps_array = np.array(maps)
+
+            # Reconstruct to original dimension: (n_maps, n_channels)
+            maps_reconstructed = np.dot(
+                maps_array, reduced_eigenvectors
+            )
+            original_data_std = original_data.std(axis=1)
+            self.maps_list_original_dim.append(maps_reconstructed)
+            label_reconstructed_maps, reconstruct_cv, reconstruct_gev = self.optimize_k(maps=maps_reconstructed, data=original_data, data_std=original_data_std, polarity=polarity)
+            self.label_list_original_dim.append(label_reconstructed_maps)
+            return reconstruct_cv, reconstruct_gev, maps, label
 
     def opt_microstate(self, min_maps=2, max_maps=10, distance=10, n_std=3, n_runs=10, maxerr=1e-6, maxiter=1000,
                        polarity=False, peaks_only=True, method='kmeans_modified', opt_k=None):
-
-        # GPU delegation: if requested and method is kmeans_modified, run on GPU then mirror results.
-        if getattr(self, "_gpu", None) is not None and method == 'kmeans_modified':
-            self._gpu.opt_microstate(min_maps=min_maps, max_maps=max_maps, distance=distance, n_std=n_std,
-                                     n_runs=n_runs, maxerr=maxerr, maxiter=maxiter, polarity=polarity,
-                                     peaks_only=peaks_only, method=method, opt_k=opt_k)
-            self.cv = self._gpu.cv
-            self.gev = self._gpu.gev
-            self.maps = self._gpu.maps
-            self.label = self._gpu.label
-            self.opt_k = self._gpu.opt_k
-            self.opt_k_index = self._gpu.opt_k_index
-            self.cv_list = self._gpu.cv_list
-            self.gev_list = self._gpu.gev_list
-            self.maps_list = self._gpu.maps_list
-            self.label_list = self._gpu.label_list
-            return
         self.gfp_peaks(distance=distance, n_std=n_std)
         if peaks_only:
             temp_data = self.data[self.peaks]

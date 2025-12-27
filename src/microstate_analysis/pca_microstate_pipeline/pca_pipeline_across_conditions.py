@@ -53,7 +53,7 @@ class PCAPipelineAcrossConditions(PCAPipelineBase):
             log_suffix: Log file suffix
         """
         super().__init__()
-        self.input_dir = input_dir
+        self.input_dir = os.path.join(input_dir, f"pca_{int(percentage*100)}")
         self.input_name = input_name
         self.output_dir = output_dir
         self.output_name = output_name

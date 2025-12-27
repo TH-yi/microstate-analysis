@@ -50,8 +50,8 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
             condition_dict: Mapping from condition names to task lists
             percentage: PCA percentage
             n_k: Number of microstates
-            n_k_index: Index into maps_list for each task
-            n_ch: Number of channels
+            n_k_index: Index into maps_list_original_dim (or maps_list as fallback)
+            n_ch: Number of channels (default, will use original_n_channels from data if available)
             data_suffix: Input filename suffix
             save_suffix: Output filename suffix
             log_dir: Optional directory for log files
@@ -59,7 +59,7 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
             log_suffix: Log file suffix
         """
         super().__init__()
-        self.input_dir = input_dir
+        self.input_dir = os.path.join(input_dir, f"pca_{int(percentage*100)}")
         self.output_dir = output_dir
         self.subjects = subjects
         self.condition_dict = condition_dict
@@ -113,8 +113,8 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
             condition_dict: Condition to tasks mapping
             condition_names: List of condition names
             n_k: Number of microstates
-            n_k_index: Index into maps_list
-            n_ch: Number of channels
+            n_k_index: Index into maps_list_original_dim (or maps_list as fallback)
+            n_ch: Number of channels (default, will use original_n_channels from data if available)
             data_suffix: Input filename suffix
             save_suffix: Output filename suffix
 
@@ -131,30 +131,46 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
         condition_res = []
 
         # Aggregate maps for each condition
+        # Use maps_list_original_dim (reconstructed to original 64D) instead of maps_list (reduced PCA space)
         for condition_name in condition_names:
             task_names = condition_dict[condition_name]
             maps = []
+            # Get original_n_channels from data (default to n_ch if not available for backward compatibility)
+            original_n_channels = n_ch
             for task_name in task_names:
                 if task_name in data:
-                    # Get maps from the specified index
-                    maps_list = data[task_name].get('maps_list', [])
-                    if maps_list and len(maps_list) > n_k_index:
-                        maps.append(maps_list[n_k_index])
+                    # Get original_n_channels from first available task
+                    if original_n_channels == n_ch and 'original_n_channels' in data[task_name]:
+                        original_n_channels = data[task_name]['original_n_channels']
+                    # Get maps from maps_list_original_dim (reconstructed to original dimension)
+                    maps_list_original = data[task_name].get('maps_list_original_dim', [])
+                    if maps_list_original and len(maps_list_original) > n_k_index:
+                        maps.append(maps_list_original[n_k_index])
                     else:
-                        # Fallback: use opt_k_index if available
+                        # Fallback 1: use opt_k_index if available
                         opt_k_index = data[task_name].get('opt_k_index', n_k_index)
-                        if maps_list and len(maps_list) > opt_k_index:
-                            maps.append(maps_list[opt_k_index])
+                        if maps_list_original and len(maps_list_original) > opt_k_index:
+                            maps.append(maps_list_original[opt_k_index])
+                        else:
+                            # Fallback 2: use maps_list (reduced PCA space) for backward compatibility
+                            maps_list = data[task_name].get('maps_list', [])
+                            if maps_list and len(maps_list) > n_k_index:
+                                maps.append(maps_list[n_k_index])
+                            elif maps_list and len(maps_list) > opt_k_index:
+                                maps.append(maps_list[opt_k_index])
 
             if maps:
-                condition_res.append(batch_mean_microstate([maps, n_k, n_ch, len(maps), use_gpu]))
+                # Use original_n_channels for mean microstate calculation
+                condition_res.append(batch_mean_microstate([maps, n_k, original_n_channels, len(maps), use_gpu]))
 
         # Build result dictionary
         for idx, condition_name in enumerate(condition_names):
             if idx < len(condition_res):
                 temp = condition_res[idx]
+                if not isinstance(temp["maps"], list):
+                    temp["maps"] = temp["maps"].tolist()
                 res[condition_name] = {
-                    'maps': temp["maps"].tolist(),
+                    'maps': temp["maps"],
                     'label': temp["label"],
                     'mean_similarity': temp['mean_similarity'],
                     'std_similarity': temp['std_similarity']

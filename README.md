@@ -408,24 +408,25 @@ microstate-analysis pca microstate-pipeline across-runs --input-dir storage/pca_
 
 **For PowerShell (Windows):**
 
-**Option 1: Use single quotes to define variable (RECOMMENDED - simplest)**
+**Option 1: Use one line (RECOMMENDED - simplest)**
+```powershell
+microstate-analysis pca microstate-pipeline across-runs --input-dir storage/pca_microstate_output/individual_run --output-dir storage/pca_microstate_output/across_runs --data-suffix _pca_individual_maps.json --save-suffix _pca_across_runs.json --subjects sub_01 --subjects sub_02 --subjects sub_03 --percentage 0.95 --n-k 6 --n-k-index 4 --n-ch 63 --log-dir storage/log/pca_across_runs --log-prefix pca_across_runs --condition-dict-json '{"idea_generation":["1_idea generation","2_idea generation","3_idea generation"],"idea_evolution":["1_idea evolution","2_idea evolution","3_idea evolution"],"idea_rating":["1_idea rating","2_idea rating","3_idea rating"],"rest":["1_rest","3_rest"]}' --max-processes 3   
+```
+If run in pycharm debug_entry.py
+```pycharm debug_entry config input box
+pca microstate-pipeline across-runs --input-dir storage/pca_microstate_output/individual_run --output-dir storage/pca_microstate_output/across_runs --data-suffix _pca_individual_maps.json --save-suffix _pca_across_runs.json --subjects sub_01 --subjects sub_02 --subjects sub_03 --percentage 0.95 --n-k 6 --n-k-index 4 --n-ch 63 --log-dir storage/log/pca_across_runs --log-prefix pca_across_runs --condition-dict-json "{\"idea_generation\":[\"1_idea generation\",\"2_idea generation\",\"3_idea generation\"],\"idea_evolution\":[\"1_idea evolution\",\"2_idea evolution\",\"3_idea evolution\"],\"idea_rating\":[\"1_idea rating\",\"2_idea rating\",\"3_idea rating\"],\"rest\":[\"1_rest\",\"3_rest\"]}" --max-processes 3
+
+```
+
+**Option 2: Use single quotes to define json variable**
 ```powershell
 $conditionJson = '{"idea_generation":["1_idea generation","2_idea generation","3_idea generation"],"idea_evolution":["1_idea evolution","2_idea evolution","3_idea evolution"],"idea_rating":["1_idea rating","2_idea rating","3_idea rating"],"rest":["1_rest","3_rest"]}'
-microstate-analysis pca microstate-pipeline across-runs --input-dir storage/pca_microstate_output/individual_run --output-dir storage/pca_microstate_output/across_runs --data-suffix _pca_individual_maps.json --save-suffix _pca_across_runs.json --subjects sub_01 --subjects sub_02 --subjects sub_03 --percentage 0.95 --n-k 6 --n-k-index 1 --n-ch 63 --log-dir storage/log/pca_across_runs --log-prefix pca_across_runs --condition-dict-json "$conditionJson" --max-processes 3
+microstate-analysis pca microstate-pipeline across-runs --input-dir storage/pca_microstate_output/individual_run --output-dir storage/pca_microstate_output/across_runs --data-suffix _pca_individual_maps.json --save-suffix _pca_across_runs.json --subjects sub_01 --subjects sub_02 --subjects sub_03 --percentage 0.95 --n-k 6 --n-k-index 4 --n-ch 63 --log-dir storage/log/pca_across_runs --log-prefix pca_across_runs --condition-dict-json "$conditionJson" --max-processes 3
 ```
 
-**Option 2: Use a JSON file (BEST for complex JSON or repeated use)**
-```powershell
-# Step 1: Create condition_dict.json file with this content:
-# {"idea_generation":["1_idea generation","2_idea generation","3_idea generation"],"idea_evolution":["1_idea evolution","2_idea evolution","3_idea evolution"],"idea_rating":["1_idea rating","2_idea rating","3_idea rating"],"rest":["1_rest","3_rest"]}
-
-# Step 2: Use the file path directly
-microstate-analysis pca microstate-pipeline across-runs --input-dir storage/pca_microstate_output/individual_run --output-dir storage/pca_microstate_output/across_runs --data-suffix _pca_individual_maps.json --save-suffix _pca_across_runs.json --subjects sub_01 --subjects sub_02 --subjects sub_03 --percentage 0.95 --n-k 6 --n-k-index 1 --n-ch 63 --log-dir storage/log/pca_across_runs --log-prefix pca_across_runs --condition-dict-json condition_dict.json --max-processes 3
-```
 
 **Note**: 
-- **Option 1**: Use **single quotes** (`'...'`) to define the variable - this preserves all double quotes in the JSON string. Then use double quotes when passing the variable: `"$conditionJson"`.
-- **Option 2**: Use a JSON file path directly - this is the most reliable method and avoids PowerShell quoting issues.
+- **Option 2**: Use **single quotes** (`'...'`) to define the variable - this preserves all double quotes in the JSON string. Then use double quotes when passing the variable: `"$conditionJson"`.
 - **Important**: When using variables in PowerShell, single quotes preserve the string exactly as written, while double quotes allow variable expansion.
 
 **Note**: The `--n-k-index` parameter selects which K value from `maps_list` to use. The pipeline will fallback to `opt_k_index` from individual-run results if the specified index is not available.
@@ -526,6 +527,34 @@ microstate-analysis pca microstate-pipeline across-conditions --input-dir storag
 
 ---
 
+#### Plotting parameters explained
+- `--montage-path`: Use a custom `.locs` file instead of the built-in `cap63.locs`.
+- `--sfreq`: Sampling frequency (Hz). Needed if you want to map samples to real time.
+- `--channel-types`: Channel type string passed to MNE (usually `'eeg'`).
+- `--on-missing`: Behavior if montage has missing channels: `raise`, `warn`, or `ignore`.
+- `--channel-names`: Optional explicit channel name list to override the default 63-channel set.
+
+
+**Parameter notes:**
+- `--montage-path`: If omitted, the built-in `cap63.locs` is used. Provide a `.locs` file path to override.
+- `--sfreq`: EEG sampling frequency (Hz). Affects duration/transition metrics.
+- `--channel-types`: Channel modality, e.g., `eeg`, `meg`, etc. Default is `eeg`.
+- `--on-missing`: Behavior when some channels in montage are missing: `raise`, `warn`, or `ignore`.
+- `--channel-names`: Explicit channel list. If provided, overrides default 63-channel cap. Must match data order.
+
+**Example with custom channel names:**
+```bash
+ch='["Fp1", "Fz", "F3", "F7", "FT9", "FC5", "FC1", "C3", "T7", "TP9", "CP5", "CP1", "Pz", "P3", "P7", "O1", "Oz", \
+    "O2", "P4", "P8", "TP10", "CP6", "CP2", "C4", "T8", "FT10", "FC6", "FC2", "F4", "F8", "Fp2", "AF7", "AF3", \
+    "AFz", "F1", "F5", "FT7", "FC3", "FCz", "C1", "C5", "TP7", "CP3", "P1", "P5", "PO7", "PO3", "POz", "PO4", \
+    "PO8", "P6", "P2", "CPz", "CP4", "TP8", "C6", "C2", "FC4", "FT8", "F6", "F2", "AF4", "AF8"]'
+microstate-analysis plot across-subjects \
+    --input-json-path results.json \
+    --output-img-dir figs/ \
+    --reordered-json-path reordered.json \
+    --channel-names $ch
+```
+
 ## Embedding in Your GUI (subprocess + JSON Lines)
 
 ```python
@@ -587,30 +616,3 @@ ret = proc.wait()
 MIT
 
 
-#### Plotting parameters explained
-- `--montage-path`: Use a custom `.locs` file instead of the built-in `cap63.locs`.
-- `--sfreq`: Sampling frequency (Hz). Needed if you want to map samples to real time.
-- `--channel-types`: Channel type string passed to MNE (usually `'eeg'`).
-- `--on-missing`: Behavior if montage has missing channels: `raise`, `warn`, or `ignore`.
-- `--channel-names`: Optional explicit channel name list to override the default 63-channel set.
-
-
-**Parameter notes:**
-- `--montage-path`: If omitted, the built-in `cap63.locs` is used. Provide a `.locs` file path to override.
-- `--sfreq`: EEG sampling frequency (Hz). Affects duration/transition metrics.
-- `--channel-types`: Channel modality, e.g., `eeg`, `meg`, etc. Default is `eeg`.
-- `--on-missing`: Behavior when some channels in montage are missing: `raise`, `warn`, or `ignore`.
-- `--channel-names`: Explicit channel list. If provided, overrides default 63-channel cap. Must match data order.
-
-**Example with custom channel names:**
-```bash
-ch='["Fp1", "Fz", "F3", "F7", "FT9", "FC5", "FC1", "C3", "T7", "TP9", "CP5", "CP1", "Pz", "P3", "P7", "O1", "Oz", \
-    "O2", "P4", "P8", "TP10", "CP6", "CP2", "C4", "T8", "FT10", "FC6", "FC2", "F4", "F8", "Fp2", "AF7", "AF3", \
-    "AFz", "F1", "F5", "FT7", "FC3", "FCz", "C1", "C5", "TP7", "CP3", "P1", "P5", "PO7", "PO3", "POz", "PO4", \
-    "PO8", "P6", "P2", "CPz", "CP4", "TP8", "C6", "C2", "FC4", "FT8", "F6", "F2", "AF4", "AF8"]'
-microstate-analysis plot across-subjects \
-    --input-json-path results.json \
-    --output-img-dir figs/ \
-    --reordered-json-path reordered.json \
-    --channel-names $ch
-```

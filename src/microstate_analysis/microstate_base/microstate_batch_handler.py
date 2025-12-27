@@ -2,7 +2,6 @@ import numpy as np
 
 from microstate_analysis.microstate_base.microstate import Microstate
 from microstate_analysis.microstate_base.meanmicrostate import MeanMicrostate
-from microstate_analysis.microstate_base.microstate_gpu import MicrostateGPU
 
 def batch_microstate_state(data, topographies, task_name):
     for a_task_name in task_name:
@@ -45,6 +44,22 @@ def batch_microstate(para):
     n_runs = para[7] if len(para) > 7 else 100
     use_gpu = para[8] if len(para) > 8 else False
     microstate = Microstate(data, use_gpu=use_gpu)
+    microstate.opt_microstate(min_maps, max_maps, n_std=n_std, n_runs=n_runs, peaks_only=peaks_only, method=method,
+                              opt_k=opt_k)
+    return microstate
+
+def batch_microstate_pca_individual_run(para):
+    data = para[0]
+    peaks_only = para[1]
+    min_maps = para[2]
+    max_maps = para[3]
+    opt_k = para[4] if len(para) > 4 else None
+    method = para[5] if len(para) > 5 else 'kmeans_modified'
+    n_std = para[6] if len(para) > 6 else 3
+    n_runs = para[7] if len(para) > 7 else 100
+    use_gpu = para[8] if len(para) > 8 else False
+    reconstruct_pca_maps_info = para[9] if len(para) > 9 else None
+    microstate = Microstate(data, use_gpu=use_gpu, reconstruct_pca_maps_info=reconstruct_pca_maps_info)
     microstate.opt_microstate(min_maps, max_maps, n_std=n_std, n_runs=n_runs, peaks_only=peaks_only, method=method,
                               opt_k=opt_k)
     return microstate
