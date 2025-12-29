@@ -60,7 +60,7 @@ class PCAPipelineAcrossRuns(PCAPipelineBase):
         """
         super().__init__()
         self.input_dir = os.path.join(input_dir, f"pca_{int(percentage*100)}")
-        self.output_dir = output_dir
+        self.output_dir = os.path.join(output_dir, f"pca_{int(percentage*100)}")
         self.subjects = subjects
         self.condition_dict = condition_dict
         self.condition_names = list(condition_dict.keys())

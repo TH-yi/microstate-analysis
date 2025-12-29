@@ -628,6 +628,7 @@ def cli_pca_individual_run(
     min_maps: int = typer.Option(2, help="Minimum number of maps."),
     max_maps: int = typer.Option(10, help="Maximum number of maps."),
     opt_k: Optional[int] = typer.Option(None, help="Optional fixed K value."),
+
     cluster_method: str = typer.Option("kmeans_modified", help="Clustering method."),
     n_std: int = typer.Option(3, help="Threshold std for microstate clustering."),
     n_runs: int = typer.Option(100, help="Clustering restarts."),

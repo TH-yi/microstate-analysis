@@ -57,7 +57,7 @@ class PCAPipelineAcrossSubjects(PCAPipelineBase):
         """
         super().__init__()
         self.input_dir = os.path.join(input_dir, f"pca_{int(percentage*100)}")
-        self.output_dir = output_dir
+        self.output_dir = os.path.join(output_dir, f"pca_{int(percentage*100)}")
         self.subjects = subjects
         self.condition_names = condition_names
         self.percentage = percentage
@@ -127,10 +127,11 @@ class PCAPipelineAcrossSubjects(PCAPipelineBase):
 
         # Aggregate maps across subjects
         result = batch_mean_microstate([maps, n_k, n_ch, len(maps), use_gpu])
-
+        if not isinstance(result["maps"], list):
+            result["maps"] = result["maps"].tolist()
         return {
             'condition': condition_name,
-            'maps': result["maps"].tolist(),
+            'maps': result["maps"],
             'label': result["label"],
             'mean_similarity': result['mean_similarity'],
             'std_similarity': result['std_similarity']

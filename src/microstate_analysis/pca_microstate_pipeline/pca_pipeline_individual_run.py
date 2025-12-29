@@ -344,14 +344,21 @@ class PCAPipelineIndividualRun(PCAPipelineBase):
                     f"{subject}/{task}: Reconstructed maps from {n_components}D to {original_n_channels}D"
                 )
 
+                # use self opt_k (if exists) to replace microstate opt_k
+                if self.opt_k:
+                    opt_k = self.opt_k
+                    opt_k_index = opt_k - self.min_maps
+                else:
+                    opt_k = task_microstate.opt_k
+                    opt_k_index = int(task_microstate.opt_k_index)
                 res[task] = {
                     'cv_list': task_microstate.cv_list,
                     'gev_list': task_microstate.gev_list,
                     'maps_list': task_microstate.maps_list,  # Maps in reduced PCA space
                     'maps_list_original_dim': task_microstate.maps_list_original_dim,  # Maps reconstructed to original dim
                     'label_list_original_dim_maps': task_microstate.label_list_original_dim,
-                    'opt_k': task_microstate.opt_k,
-                    'opt_k_index': int(task_microstate.opt_k_index),
+                    'opt_k': opt_k,
+                    'opt_k_index': opt_k_index,
                     'min_maps': self.min_maps,
                     'max_maps': self.max_maps,
                     'pca_n_components': int(n_components),

@@ -55,7 +55,7 @@ class PCAPipelineAcrossConditions(PCAPipelineBase):
         super().__init__()
         self.input_dir = os.path.join(input_dir, f"pca_{int(percentage*100)}")
         self.input_name = input_name
-        self.output_dir = output_dir
+        self.output_dir = os.path.join(output_dir, f"pca_{int(percentage*100)}")
         self.output_name = output_name
         self.condition_names = condition_names
         self.percentage = percentage
@@ -99,8 +99,10 @@ class PCAPipelineAcrossConditions(PCAPipelineBase):
         microstate = MeanMicrostate(maps, self.n_k, self.n_ch, len(maps), use_gpu=self.use_gpu)
         temp = microstate.mean_microstates()
 
+        if not isinstance(temp[0], list):
+            temp[0] = temp[0].tolist()
         res = {
-            'maps': temp[0].tolist(),
+            'maps': temp[0],
             'label': temp[1],
             'mean_similarity': temp[2],
             'std_similarity': temp[3]
