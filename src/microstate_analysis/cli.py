@@ -109,7 +109,7 @@ def _fix_powershell_json(json_str: str) -> str:
 
 def version_callback(value: bool):
     if value:
-        print("microstate_analysis 0.2.1")
+        print("microstate_analysis 0.3.0")
         raise typer.Exit()
 
 
